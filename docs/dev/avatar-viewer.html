@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Avatar Viewer</title>
+<style>
+  :root { --bg: #0d0f12; --fg: #e8e8e8; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; overflow: hidden; }
+  #ui { position: fixed; left: 12px; top: 12px; background: rgba(0,0,0,.55); padding: 8px 10px; border-radius: 6px; }
+  select { margin-right: 6px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../vendor/three/build/three.module.js", "three/addons/": "../vendor/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="ui"><select id="hero"></select><select id="clip"></select></div>
+<script type="module">
+// Developer tool: previews every hero's realistic Rocketbox model with every motion-capture clip.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const params = new URLSearchParams(location.search);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d22);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.05, 100);
+camera.position.set(0, 1.45, 3.4);
+camera.lookAt(0, 1.0, 0);
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(2, 4, 3); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 64), new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 0.45 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+const manifest = await (await fetch('../assets/manifest.json')).json();
+const loader = new GLTFLoader();
+const texLoader = new THREE.TextureLoader();
+const heroSel = document.getElementById('hero'), clipSel = document.getElementById('clip');
+for (const h of Object.keys(manifest.heroes)) heroSel.add(new Option(h, h));
+for (const c of Object.keys(manifest.clips.m)) clipSel.add(new Option(c, c));
+heroSel.value = params.get('hero') || 'Rayne';
+clipSel.value = params.get('clip') || 'idle';
+
+let model = null, mixer = null;
+const clock = new THREE.Clock();
+
+function tex(url, srgb) {
+  const t = texLoader.load(url);
+  t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.flipY = false; t.anisotropy = 8;
+  return t;
+}
+
+async function load() {
+  if (model) scene.remove(model);
+  const def = manifest.heroes[heroSel.value];
+  const base = '../assets/' + def.folder;
+  const gltf = await loader.loadAsync(base + def.model);
+  model = gltf.scene;
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true; o.frustumCulled = false;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const out = mats.map((m) => {
+      const spec = def.materials[m.name] || {};
+      const mat = new THREE.MeshPhysicalMaterial({ name: m.name, roughness: 1, metalness: 0 });
+      if (spec.map) mat.map = tex(base + spec.map, true);
+      if (spec.normalMap) mat.normalMap = tex(base + spec.normalMap, false);
+      if (spec.ormMap) { mat.roughnessMap = tex(base + spec.ormMap, false); mat.aoMap = null; }
+      if (spec.kind === 'skin') { mat.sheen = 0.25; mat.sheenRoughness = 0.6; mat.sheenColor = new THREE.Color(0.9, 0.55, 0.45); }
+      if (spec.kind === 'hair') { mat.alphaTest = spec.alphaTest || 0.35; mat.side = THREE.DoubleSide; }
+      if (spec.kind === 'gear' && /helmet|knife/.test(m.name) && params.get('gear') !== '1') mat.visible = false;
+      return mat;
+    });
+    o.material = Array.isArray(o.material) ? out : out[0];
+  });
+  scene.add(model);
+  await playClip();
+}
+
+async function playClip() {
+  const def = manifest.heroes[heroSel.value];
+  const g = def.gender === 'female' ? 'f' : 'm';
+  const clipDef = manifest.clips[g][clipSel.value];
+  const anim = await loader.loadAsync('../assets/' + clipDef.file);
+  const clip = anim.animations[0];
+  // Keep the root in place: remove horizontal root motion (the game moves the character itself).
+  for (const t of clip.tracks) {
+    if (t.name.endsWith('.position')) {
+      const v = t.values;
+      for (let i = 0; i < v.length; i += 3) { v[i] = 0; v[i + 2] = 0; }
+    }
+  }
+  mixer = new THREE.AnimationMixer(model);
+  mixer.clipAction(clip).play();
+}
+
+heroSel.onchange = load; clipSel.onchange = playClip;
+await load();
+let frames = 0;
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  mixer && mixer.update(dt);
+  model && (model.rotation.y += dt * 0.3);
+  renderer.render(scene, camera);
+  frames++;
+});
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+window.__DU = { ready: true, stats: () => ({ frames, hero: heroSel.value, clip: clipSel.value, info: renderer.info.render }) };
+</script>
+</body>
+</html>

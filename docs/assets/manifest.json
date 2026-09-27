@@ -1,0 +1,417 @@
+{
+ "clips": {
+  "f": {
+   "breathe": {
+    "file": "anims/f/breathe.glb",
+    "loop": true,
+    "source": "f_idle_breathe_01.max.fbx"
+   },
+   "cheer": {
+    "file": "anims/f/cheer.glb",
+    "loop": false,
+    "source": "f_cheer_01.max.fbx"
+   },
+   "crouch": {
+    "file": "anims/f/crouch.glb",
+    "loop": true,
+    "source": "f_crouch_idle.max.fbx"
+   },
+   "defeat": {
+    "file": "anims/f/defeat.glb",
+    "loop": false,
+    "source": "f_gestic_shrug_01.max.fbx"
+   },
+   "idle": {
+    "file": "anims/f/idle.glb",
+    "loop": true,
+    "source": "f_idle_neutral_01.max.fbx"
+   },
+   "lookaround": {
+    "file": "anims/f/lookaround.glb",
+    "loop": true,
+    "source": "f_idle_look_around_01.max.fbx"
+   },
+   "run": {
+    "file": "anims/f/run.glb",
+    "loop": true,
+    "source": "f_run_neutral_01.max.fbx"
+   },
+   "sprint": {
+    "file": "anims/f/sprint.glb",
+    "loop": true,
+    "source": "f_run_fast_01.max.fbx"
+   },
+   "stunned": {
+    "file": "anims/f/stunned.glb",
+    "loop": true,
+    "source": "f_idle_drunk_01.max.fbx"
+   },
+   "walk": {
+    "file": "anims/f/walk.glb",
+    "loop": true,
+    "source": "f_walk_neutral_01.max.fbx"
+   },
+   "wave": {
+    "file": "anims/f/wave.glb",
+    "loop": false,
+    "source": "f_wave_01.max.fbx"
+   }
+  },
+  "m": {
+   "breathe": {
+    "file": "anims/m/breathe.glb",
+    "loop": true,
+    "source": "m_idle_breathe_01.max.fbx"
+   },
+   "cheer": {
+    "file": "anims/m/cheer.glb",
+    "loop": false,
+    "source": "m_cheer_01.max.fbx"
+   },
+   "crouch": {
+    "file": "anims/m/crouch.glb",
+    "loop": true,
+    "source": "m_crouch_idle.max.fbx"
+   },
+   "defeat": {
+    "file": "anims/m/defeat.glb",
+    "loop": false,
+    "source": "m_gestic_shrug_01.max.fbx"
+   },
+   "idle": {
+    "file": "anims/m/idle.glb",
+    "loop": true,
+    "source": "m_idle_neutral_01.max.fbx"
+   },
+   "lookaround": {
+    "file": "anims/m/lookaround.glb",
+    "loop": true,
+    "source": "m_idle_look_around_01.max.fbx"
+   },
+   "run": {
+    "file": "anims/m/run.glb",
+    "loop": true,
+    "source": "m_run_neutral_01.max.fbx"
+   },
+   "sprint": {
+    "file": "anims/m/sprint.glb",
+    "loop": true,
+    "source": "m_run_fast_01.max.fbx"
+   },
+   "stunned": {
+    "file": "anims/m/stunned.glb",
+    "loop": true,
+    "source": "m_idle_drunk_01.max.fbx"
+   },
+   "walk": {
+    "file": "anims/m/walk.glb",
+    "loop": true,
+    "source": "m_walk_neutral_01.max.fbx"
+   },
+   "wave": {
+    "file": "anims/m/wave.glb",
+    "loop": false,
+    "source": "m_wave_01.max.fbx"
+   }
+  }
+ },
+ "commit": "0943055db6ec570bcef9f2c8b41c9e5467c808f9",
+ "heroes": {
+  "Bear": {
+   "avatar": "Fire_Male_02",
+   "folder": "heroes/bear/",
+   "gender": "male",
+   "materials": {
+    "m132_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m132_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "m132_helmet": {
+     "kind": "gear",
+     "map": "helmet_color.webp",
+     "normalMap": "helmet_normal.webp",
+     "ormMap": "helmet_orm.webp"
+    },
+    "m132_opacity": {
+     "alphaTest": 0.35,
+     "kind": "hair",
+     "map": "opacity_color.webp",
+     "normalMap": "opacity_normal.webp",
+     "ormMap": "opacity_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Chrono": {
+   "avatar": "Military_Female_01",
+   "folder": "heroes/chrono/",
+   "gender": "female",
+   "materials": {
+    "sf003_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "sf003_equipment": {
+     "kind": "gear",
+     "map": "equipment_color.webp",
+     "normalMap": "equipment_normal.webp",
+     "ormMap": "equipment_orm.webp"
+    },
+    "sf003_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "sf003_helmet": {
+     "kind": "gear",
+     "map": "helmet_color.webp",
+     "normalMap": "helmet_normal.webp",
+     "ormMap": "helmet_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Elsa": {
+   "avatar": "Pilot_Female_01",
+   "folder": "heroes/elsa/",
+   "gender": "female",
+   "materials": {
+    "f168_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "f168_hat": {
+     "kind": "gear",
+     "map": "hat_color.webp",
+     "normalMap": "hat_normal.webp",
+     "ormMap": "hat_orm.webp"
+    },
+    "f168_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Gale": {
+   "avatar": "Sports_Female_02",
+   "folder": "heroes/gale/",
+   "gender": "female",
+   "materials": {
+    "f013_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "f013_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "f013_opacity": {
+     "alphaTest": 0.35,
+     "kind": "hair",
+     "map": "opacity_color.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Gouki": {
+   "avatar": "Military_Male_01",
+   "folder": "heroes/gouki/",
+   "gender": "male",
+   "materials": {
+    "sm002_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "sm002_combat_knife": {
+     "kind": "gear",
+     "map": "combat_knife_color.webp",
+     "normalMap": "combat_knife_normal.webp",
+     "ormMap": "combat_knife_orm.webp"
+    },
+    "sm002_equipment": {
+     "kind": "gear",
+     "map": "equipment_color.webp",
+     "normalMap": "equipment_normal.webp",
+     "ormMap": "equipment_orm.webp"
+    },
+    "sm002_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "sm002_helmet": {
+     "kind": "gear",
+     "map": "helmet_color.webp",
+     "normalMap": "helmet_normal.webp",
+     "ormMap": "helmet_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Houdini": {
+   "avatar": "Business_Male_01",
+   "folder": "heroes/houdini/",
+   "gender": "male",
+   "materials": {
+    "m005_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m005_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "m005_opacity": {
+     "alphaTest": 0.35,
+     "kind": "hair",
+     "map": "opacity_color.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Rayne": {
+   "avatar": "Sports_Male_02",
+   "folder": "heroes/rayne/",
+   "gender": "male",
+   "materials": {
+    "m301_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m301_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Screws": {
+   "avatar": "Construction_Male_01",
+   "folder": "heroes/screws/",
+   "gender": "male",
+   "materials": {
+    "m111_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m111_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    },
+    "m111_helmet": {
+     "kind": "gear",
+     "map": "helmet_color.webp",
+     "normalMap": "helmet_normal.webp",
+     "ormMap": "helmet_orm.webp"
+    },
+    "m111_opacity": {
+     "alphaTest": 0.35,
+     "kind": "hair",
+     "map": "opacity_color.webp",
+     "normalMap": "opacity_normal.webp",
+     "ormMap": "opacity_orm.webp"
+    },
+    "m111_tools": {
+     "kind": "gear",
+     "map": "tools_color.webp",
+     "normalMap": "tools_normal.webp",
+     "ormMap": "tools_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Shadow": {
+   "avatar": "Security_Male_01",
+   "folder": "heroes/shadow/",
+   "gender": "male",
+   "materials": {
+    "m171_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m171_equipment": {
+     "kind": "gear",
+     "map": "equipment_color.webp",
+     "normalMap": "equipment_normal.webp",
+     "ormMap": "equipment_orm.webp"
+    },
+    "m171_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  },
+  "Specter": {
+   "avatar": "Sports_Male_04",
+   "folder": "heroes/specter/",
+   "gender": "male",
+   "materials": {
+    "m026_body": {
+     "kind": "body",
+     "map": "body_color.webp",
+     "normalMap": "body_normal.webp",
+     "ormMap": "body_orm.webp"
+    },
+    "m026_head": {
+     "kind": "skin",
+     "map": "head_color.webp",
+     "normalMap": "head_normal.webp",
+     "ormMap": "head_orm.webp"
+    }
+   },
+   "model": "model.glb",
+   "portrait": "portrait.webp"
+  }
+ },
+ "license": "MIT (Copyright (c) Microsoft Corporation)",
+ "source": "https://github.com/microsoft/Microsoft-Rocketbox"
+}

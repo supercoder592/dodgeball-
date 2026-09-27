@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0d10" />
+<meta name="description" content="Dodgeball Ultra - realistic 3v3 superpowered dodgeball in the browser. 寫實 3v3 超能力躲避球。" />
+<title>Dodgeball Ultra</title>
+<link rel="stylesheet" href="css/game.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/",
+    "cannon-es": "./vendor/cannon-es/cannon-es.js"
+  }
+}
+</script>
+</head>
+<body>
+  <!-- WebGL canvas container -->
+  <div id="app"></div>
+  <!-- DOM overlays (HUD, menus, loading) are built by js/ui/*.js inside this layer -->
+  <div id="ui"></div>
+  <noscript>Dodgeball Ultra needs JavaScript and WebGL 2. 需要啟用 JavaScript 與 WebGL 2。</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

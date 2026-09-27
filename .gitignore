@@ -48,3 +48,8 @@ crashlytics-build.properties
 /Tools/CoreTests/bin/
 /Tools/CoreTests/obj/
 __pycache__/
+
+# Web build tooling
+/Tools/web/node_modules/
+/Tools/web/.cache/
+/Tools/web/screenshots/
