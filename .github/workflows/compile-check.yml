@@ -1,0 +1,25 @@
+# Type-checks every Dodgeball Ultra assembly against Unity reference assemblies and runs the rules tests.
+# No Unity licence or editor install needed.
+name: compile-check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Cache Unity reference assemblies
+        uses: actions/cache@v4
+        with:
+          path: Tools/CompileCheck/.cache
+          key: unity-refs-${{ hashFiles('Tools/CompileCheck/setup.sh', 'Tools/CompileCheck/Projects/UnityEngine.UI.csproj.template') }}
+      - name: Compile-check all assemblies
+        run: Tools/CompileCheck/run.sh
+      - name: Rules unit tests (DodgeballUltra.Core)
+        run: dotnet test Tools/CoreTests

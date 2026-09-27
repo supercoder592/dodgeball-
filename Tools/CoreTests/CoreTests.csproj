@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Runs the engine-independent rules tests (Assets/DodgeballUltra/Tests/EditMode/Core) against the pure C#
+    DodgeballUltra.Core sources with plain .NET - no Unity needed:  dotnet test Tools/CoreTests
+    The same test files also run inside Unity's Test Runner (EditMode).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Assets/DodgeballUltra/Scripts/Core/**/*.cs" />
+    <Compile Include="../../Assets/DodgeballUltra/Tests/EditMode/Core/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="NUnit" Version="3.13.3" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+  </ItemGroup>
+</Project>
