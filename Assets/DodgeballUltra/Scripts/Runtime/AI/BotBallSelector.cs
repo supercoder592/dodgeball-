@@ -47,6 +47,7 @@ namespace DodgeballUltra.AI
                 if (ball == null || ball.IsAbilityBall || ball == ignored) continue;
                 var state = ball.State;
                 if (state != BallState.Free && state != BallState.Stasis) continue;
+                if (!ball.CanBePickedUpBy(self)) continue; // fading, pooled, awaiting an ability launch...
 
                 var pos = ball.transform.position;
                 if (state == BallState.Stasis && pos.y - self.Position.y > stasisReachHeight) continue;
