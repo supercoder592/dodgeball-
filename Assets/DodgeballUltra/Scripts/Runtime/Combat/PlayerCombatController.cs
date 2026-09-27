@@ -114,6 +114,9 @@ namespace DodgeballUltra.Combat
         /// </summary>
         public CatchQuality TryResolveCatch(DodgeBall ball, Vector3 contactPoint, float impactTime) => throw new NotImplementedException();
 
+        /// <summary>Disarms the catch stance without a whiff penalty (stun, freeze, elimination).</summary>
+        public void CancelCatch() => throw new NotImplementedException();
+
         /// <summary>True if a ball at <paramref name="ballPosition"/> is inside the frontal catch cone.</summary>
         public bool IsInCatchCone(Vector3 ballPosition) => throw new NotImplementedException();
 

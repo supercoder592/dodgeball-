@@ -41,6 +41,9 @@ namespace DodgeballUltra.Juice
     {
         public static JuiceManager Instance { get; private set; }
 
+        /// <summary>Tuning asset. Assigned by GameBootstrap; a default is created when null.</summary>
+        public JuiceProfile Profile { get; set; }
+
         /// <summary>True while a hitstop is freezing time.</summary>
         public bool IsHitstopActive { get; private set; }
 
