@@ -493,8 +493,9 @@ namespace DodgeballUltra.Player
                 CurrentHp = 0f;
                 LastEliminationContext = context;
 
-                // Frozen ice shatters, cloak drops, every effect ends (also releases a Frozen incapacitation first).
-                if (_owner.Status != null) _owner.Status.RemoveAll();
+                // Frozen ice shatters, timed effects end (also releases a Frozen incapacitation first); permanent passive
+                // markers stay. Ability-owned effects are cleaned up when Incapacitate interrupts the abilities below.
+                if (_owner.Status != null) _owner.Status.ClearForReset();
 
                 // Locks input, freezes the root motor, drops the held ball, interrupts abilities.
                 if (_owner.StateMachine != null) _owner.StateMachine.Incapacitate(IncapacitationReason.Eliminated);

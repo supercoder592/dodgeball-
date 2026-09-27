@@ -256,8 +256,9 @@ namespace DodgeballUltra.Player
         /// <summary>Full reset between rounds: HP, statuses, state machine, abilities' round state, held ball dropped.</summary>
         public void ResetForRound(Vector3 position, Quaternion rotation)
         {
-            // Effects first: removing Frozen releases its incapacitation; nothing may linger into the next round.
-            if (Status != null) Status.RemoveAll();
+            // Effects first: removing Frozen releases its incapacitation; no timed or control effect lingers into the
+            // next round (permanent passive markers such as SilentFootsteps are kept).
+            if (Status != null) Status.ClearForReset();
             if (Combat != null) Combat.ResetForRound();
             if (Abilities != null) Abilities.ResetForRound(false); // the ultimate meter carries over
             if (Health != null) Health.ResetForRound();
