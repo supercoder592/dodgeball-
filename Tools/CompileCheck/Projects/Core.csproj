@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for DodgeballUltra.Core. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.Core</AssemblyName>
+    <DefineConstants>$(UnityDefines)</DefineConstants>
+    <OutputPath>bin/$(CcTag)/Core/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Assets/DodgeballUltra/Scripts/Core/**/*.cs" />
+  </ItemGroup>
+
+</Project>

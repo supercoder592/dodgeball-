@@ -1,0 +1,11 @@
+<Project>
+  <!-- Unity engine module reference assemblies + uGUI. -->
+  <ItemGroup>
+    <UnityModuleDll Include="$(UnityCache)modules/lib/net45/*.dll" Exclude="$(UnityCache)modules/lib/net45/UnityEngine.dll" />
+    <Reference Include="@(UnityModuleDll)" Private="false" />
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(UnityCache)ugui/bin/UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

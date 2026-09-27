@@ -1,0 +1,34 @@
+{
+    "name": "DodgeballUltra.Runtime",
+    "rootNamespace": "DodgeballUltra",
+    "references": [
+        "DodgeballUltra.Core",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.0.0",
+            "define": "DU_INPUT_SYSTEM"
+        },
+        {
+            "name": "com.unity.render-pipelines.high-definition",
+            "expression": "1.0.0",
+            "define": "DU_HDRP"
+        },
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "1.0.0",
+            "define": "DU_URP"
+        }
+    ],
+    "noEngineReferences": false
+}

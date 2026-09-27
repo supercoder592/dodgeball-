@@ -1,0 +1,22 @@
+<Project>
+  <!-- Shared settings for every compile-check project. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <CcTag Condition="'$(CcTag)' == ''">local</CcTag>
+    <BaseIntermediateOutputPath>obj/$(CcTag)/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>obj/$(CcTag)/$(MSBuildProjectName)/</MSBuildProjectExtensionsPath>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- CS0649/CS0414/CS0169: Unity serialized fields. CS0618: obsolete APIs are handled by version guards. -->
+    <NoWarn>$(NoWarn);CS0649;CS0414;CS0169;CS1591;CS0436</NoWarn>
+    <RepoRoot>$(MSBuildThisFileDirectory)../../../</RepoRoot>
+    <UnityCache>$(MSBuildThisFileDirectory)../.cache/</UnityCache>
+    <UnityDefines>UNITY_5_3_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2018_1_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_2020_1_OR_NEWER;UNITY_2021_1_OR_NEWER;UNITY_2021_2_OR_NEWER;UNITY_2021_3_OR_NEWER;UNITY_STANDALONE;UNITY_STANDALONE_WIN;ENABLE_PHYSICS;ENABLE_MONO</UnityDefines>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+</Project>

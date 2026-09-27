@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for DodgeballUltra.Rendering.HDRP. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.Rendering.HDRP</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR;DU_HDRP</DefineConstants>
+    <OutputPath>bin/$(CcTag)/RenderingHDRP/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Assets/DodgeballUltra/Scripts/Rendering.HDRP/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Runtime.csproj" />
+    <ProjectReference Include="HdrpStubs.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for DodgeballUltra.Editor. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.Editor</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR;DU_HDRP;DU_INPUT_SYSTEM</DefineConstants>
+    <OutputPath>bin/$(CcTag)/Editor/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Assets/DodgeballUltra/Scripts/Editor/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Runtime.csproj" />
+    <Reference Include="UnityEditor"><HintPath>$(UnityCache)sdk/lib/UnityEditor.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

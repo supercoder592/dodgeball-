@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for Unity.InputSystem. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>Unity.InputSystem</AssemblyName>
+    <DefineConstants>$(UnityDefines)</DefineConstants>
+    <OutputPath>bin/$(CcTag)/InputSystemStubs/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Stubs/InputSystem/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+</Project>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for Unity.RenderPipelines.HighDefinition.Editor. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>Unity.RenderPipelines.HighDefinition.Editor</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR</DefineConstants>
+    <OutputPath>bin/$(CcTag)/HdrpEditorStubs/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Stubs/HDRPEditor/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="HdrpStubs.csproj" />
+    <Reference Include="UnityEditor"><HintPath>$(UnityCache)sdk/lib/UnityEditor.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

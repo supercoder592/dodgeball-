@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for Unity.RenderPipelines.HighDefinition.Runtime. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>Unity.RenderPipelines.HighDefinition.Runtime</AssemblyName>
+    <DefineConstants>$(UnityDefines)</DefineConstants>
+    <OutputPath>bin/$(CcTag)/HdrpStubs/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Stubs/HDRP/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+</Project>

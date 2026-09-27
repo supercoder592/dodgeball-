@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for DodgeballUltra.Runtime. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.Runtime</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR;DU_INPUT_SYSTEM;ENABLE_INPUT_SYSTEM;ENABLE_LEGACY_INPUT_MANAGER;DU_HDRP</DefineConstants>
+    <OutputPath>bin/$(CcTag)/Runtime/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Assets/DodgeballUltra/Scripts/Runtime/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="InputSystemStubs.csproj" />
+  </ItemGroup>
+</Project>

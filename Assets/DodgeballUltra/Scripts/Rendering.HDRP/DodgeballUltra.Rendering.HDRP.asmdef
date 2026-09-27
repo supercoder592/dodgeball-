@@ -1,0 +1,28 @@
+{
+    "name": "DodgeballUltra.Rendering.HDRP",
+    "rootNamespace": "DodgeballUltra.Rendering.HDRP",
+    "references": [
+        "DodgeballUltra.Core",
+        "DodgeballUltra.Runtime",
+        "Unity.RenderPipelines.Core.Runtime",
+        "Unity.RenderPipelines.HighDefinition.Runtime",
+        "Unity.RenderPipelines.HighDefinition.Config.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "DU_HDRP"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.high-definition",
+            "expression": "1.0.0",
+            "define": "DU_HDRP"
+        }
+    ],
+    "noEngineReferences": false
+}

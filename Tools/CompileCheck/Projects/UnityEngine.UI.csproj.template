@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>UnityEngine.UI</AssemblyName>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DefineConstants>UNITY_2021_3_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_5_3_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2018_1_OR_NEWER;PACKAGE_PHYSICS;PACKAGE_PHYSICS2D;PACKAGE_ANIMATION</DefineConstants>
+    <NoWarn>CS0618;CS0649;CS0414;CS0169;CS1998;CS0067;CS0108;CS0114</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="src/**/*.cs" />
+    <UnityModuleDll Include="../modules/lib/net45/*.dll" Exclude="../modules/lib/net45/UnityEngine.dll" />
+    <Reference Include="@(UnityModuleDll)" Private="false" />
+  </ItemGroup>
+</Project>

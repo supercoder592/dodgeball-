@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compile-check project for DodgeballUltra.Tests.EditMode. Generated layout; see Tools/CompileCheck/README.md -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.Tests.EditMode</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR;UNITY_INCLUDE_TESTS</DefineConstants>
+    <OutputPath>bin/$(CcTag)/TestsEditMode/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Assets/DodgeballUltra/Tests/EditMode/**/*.cs" />
+  </ItemGroup>
+  <Import Project="UnityRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Runtime.csproj" />
+    <Reference Include="nunit.framework"><HintPath>$(UnityCache)nunit/lib/netstandard2.0/nunit.framework.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
