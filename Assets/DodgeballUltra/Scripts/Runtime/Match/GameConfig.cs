@@ -25,11 +25,56 @@ namespace DodgeballUltra.Match
         [Tooltip("Optional prefab overriding the procedural ball visual (must not contain colliders).")]
         public GameObject ballVisualPrefab;
 
+        [Header("Team kits")]
+        [Tooltip("Home team accent (ground ring / rim accent via CharacterVisual.SetTeamColor, HUD, VFX tints). A deep, " +
+                 "slightly desaturated royal blue reads well under warm arena floodlights.")]
+        public Color homeTeamColor = new Color(0.16f, 0.38f, 0.86f);
+        [Tooltip("Away team accent. A deep crimson, clearly distinguishable from the home blue for colour-blind players " +
+                 "by luminance as well as hue.")]
+        public Color awayTeamColor = new Color(0.82f, 0.16f, 0.14f);
+
         public CharacterData GetHero(HeroId hero)
         {
             for (int i = 0; i < roster.Count; i++)
                 if (roster[i] != null && roster[i].heroId == hero) return roster[i];
             return null;
+        }
+
+        /// <summary>Accent colour of <paramref name="team"/> (neutral grey for <see cref="TeamId.None"/>).</summary>
+        public Color GetTeamColor(TeamId team)
+        {
+            switch (team)
+            {
+                case TeamId.Home: return homeTeamColor;
+                case TeamId.Away: return awayTeamColor;
+                default: return new Color(0.75f, 0.75f, 0.75f);
+            }
+        }
+
+        /// <summary>
+        /// Heroes that are in the roster, in roster order (the hero-select grid order), without duplicates.
+        /// Falls back to every <see cref="HeroId"/> when the roster is empty.
+        /// </summary>
+        public void GetAvailableHeroes(List<HeroId> results)
+        {
+            results.Clear();
+            for (int i = 0; i < roster.Count; i++)
+            {
+                var data = roster[i];
+                if (data != null && !results.Contains(data.heroId)) results.Add(data.heroId);
+            }
+            if (results.Count > 0) return;
+
+            var all = (HeroId[])System.Enum.GetValues(typeof(HeroId));
+            for (int i = 0; i < all.Length; i++) results.Add(all[i]);
+        }
+
+        /// <summary>Heroes whose <see cref="CharacterData.modelPrefab"/> is missing (the realistic Rocketbox model was not imported).</summary>
+        public void GetHeroesWithoutModel(List<CharacterData> results)
+        {
+            results.Clear();
+            for (int i = 0; i < roster.Count; i++)
+                if (roster[i] != null && roster[i].modelPrefab == null) results.Add(roster[i]);
         }
     }
 }

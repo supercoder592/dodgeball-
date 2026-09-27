@@ -18,7 +18,26 @@ namespace DodgeballUltra.Player
 
         public static void Register(DodgeballPlayer player)
         {
-            if (player != null && !s_players.Contains(player)) s_players.Add(player);
+            if (player == null) return;
+            // Purge players destroyed without OnDestroy (scene unloads in the editor, domain reload quirks).
+            for (int i = s_players.Count - 1; i >= 0; i--)
+                if (s_players[i] == null) s_players.RemoveAt(i);
+            if (!s_players.Contains(player)) s_players.Add(player);
+        }
+
+        /// <summary>Number of registered players.</summary>
+        public static int Count => s_players.Count;
+
+        /// <summary>Players of <paramref name="team"/> that can currently be hit (infield, alive, not mid-elimination).</summary>
+        public static int CountTargetable(TeamId team)
+        {
+            int n = 0;
+            for (int i = 0; i < s_players.Count; i++)
+            {
+                var p = s_players[i];
+                if (p != null && p.Team == team && p.IsTargetable) n++;
+            }
+            return n;
         }
 
         public static void Unregister(DodgeballPlayer player) => s_players.Remove(player);

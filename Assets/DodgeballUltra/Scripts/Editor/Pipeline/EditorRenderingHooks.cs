@@ -103,9 +103,16 @@ namespace DodgeballUltra.Editor.Pipeline
         /// <summary>Set by the Editor module to its Built-in implementation.</summary>
         public static void RegisterFallback(IEditorRenderingHooks hooks) => s_fallback = hooks;
 
-        /// <summary>The pipeline implementation when registered (even if not yet active: ConfigureProject activates it), else the fallback.</summary>
-        public static IEditorRenderingHooks Active => s_pipelineHooks ?? s_fallback;
+        /// <summary>
+        /// The pipeline implementation when registered (even if not yet active: ConfigureProject activates it), else the fallback.
+        /// Never null: if nothing registered yet (e.g. a static constructor ordering edge case in batch mode) the Built-in
+        /// fallback is created on demand.
+        /// </summary>
+        public static IEditorRenderingHooks Active => s_pipelineHooks ?? s_fallback ?? (s_fallback = new BuiltInEditorRenderingHooks());
 
         public static bool HasPipelineHooks => s_pipelineHooks != null;
+
+        /// <summary>The Built-in (Standard shader) fallback implementation, created on demand.</summary>
+        public static IEditorRenderingHooks Fallback => s_fallback ?? (s_fallback = new BuiltInEditorRenderingHooks());
     }
 }
