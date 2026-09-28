@@ -12,7 +12,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 ? args[i + 1] : def; };
 const flag = (name) => args.includes('--' + name);
-const query = opt('query', 'autoplay=1&spectate=1&seed=7&quality=low');
+const query = opt('query', 'autoplay=1&spectate=1&seed=7&quality=low&maxdt=0.6');
 const seconds = Number(opt('seconds', '20'));
 const shots = Number(opt('shots', '4'));
 const tag = opt('tag', 'smoke');

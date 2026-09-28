@@ -108,18 +108,28 @@ export function releaseGain(t, dur, release) { return release > 0 && t > dur - r
 export function addTone(b, o, sr = SR) {
   const t0 = o.t0 || 0, dur = o.dur ?? (b.length / sr - t0);
   const f0 = o.f0, f1 = o.f1 ?? o.f0, fTau = o.fTau ?? 0.05;
-  const amp = o.amp ?? 1, attack = o.attack ?? 0.002, hold = o.hold ?? 0, decay = o.decay ?? Infinity, release = o.release ?? 0.005;
-  const vibRate = o.vibRate || 0, vibDepth = o.vibDepth || 0, harm = o.harm || null;
+  const amp = o.amp ?? 1, attack = Math.max(1e-5, o.attack ?? 0.002), hold = o.hold ?? 0, decay = o.decay ?? Infinity;
+  const release = o.release ?? 0.005;
+  const vibRate = o.vibRate || 0, vibDepth = o.vibDepth || 0;
+  const hr = o.harm ? o.harm.map((h) => h[0]) : null, hg = o.harm ? o.harm.map((h) => h[1]) : null;
   const s0 = Math.floor(t0 * sr), n = Math.min(b.length - s0, Math.floor(dur * sr));
-  let ph = o.phase || 0;
+  // incremental exponentials: glide factor and decay envelope (one multiply per sample instead of exp())
+  const kGlide = Math.exp(-1 / (Math.max(1e-5, fTau) * sr));
+  const kDecay = decay === Infinity ? 1 : Math.exp(-1 / (decay * sr));
+  const aS = attack * sr, hS = (attack + hold) * sr, relS = release * sr;
+  let ph = o.phase || 0, gl = 1, dv = 1;
   for (let i = 0; i < n; i++) {
-    const t = i / sr;
-    let f = f1 + (f0 - f1) * Math.exp(-t / fTau);
-    if (vibDepth) f *= 1 + vibDepth * Math.sin(TAU * vibRate * t);
+    let f = f1 + (f0 - f1) * gl;
+    gl *= kGlide;
+    if (vibDepth) f *= 1 + vibDepth * Math.sin(TAU * vibRate * i / sr);
     ph += TAU * f / sr;
     let s = Math.sin(ph);
-    if (harm) for (const [ratio, g] of harm) s += g * Math.sin(ph * ratio);
-    b[s0 + i] += s * amp * ahd(t, attack, hold, decay) * releaseGain(t, dur, release);
+    if (hr) for (let k = 0; k < hr.length; k++) s += hg[k] * Math.sin(ph * hr[k]);
+    let e;
+    if (i < aS) e = i / aS; else if (i < hS) e = 1; else { e = dv; dv *= kDecay; }
+    const rem = n - i;
+    if (rem < relS) e *= rem / relS;
+    b[s0 + i] += s * amp * e;
   }
   return b;
 }
@@ -177,17 +187,22 @@ export function addModal(b, t0, freqs, amps, decays, sr = SR) {
 export function addImpulses(b, r, o, sr = SR) {
   const t0 = o.t0 || 0, dur = o.dur;
   const src = new Noise(r, 'white');
+  // Non-homogeneous Poisson process by thinning: candidates at the peak rate, accepted with rate(u) / peak.
+  let peak = 0.01;
+  for (let k = 0; k <= 64; k++) peak = Math.max(peak, o.rate(k / 64));
   let t = 0;
   while (t < dur) {
-    const rate = Math.max(0.01, o.rate(t / dur));
-    t += -Math.log(1 - r() * 0.999999) / rate;
+    t += -Math.log(1 - r() * 0.999999) / peak;
     if (t >= dur) break;
+    if (r() * peak > o.rate(t / dur)) continue;
     const [type, f, q] = o.filter(r);
     const bq = new Biquad(type, f, q, 0, sr);
     const a = range(r, o.amp[0], o.amp[1]);
     const dec = range(r, o.decay[0], o.decay[1]);
-    const s0 = Math.floor((t0 + t) * sr), n = Math.min(b.length - s0, Math.floor(dec * 8 * sr));
-    for (let i = 0; i < n; i++) b[s0 + i] += bq.process(src.next()) * a * Math.exp(-(i / sr) / dec);
+    const s0 = Math.floor((t0 + t) * sr), n = Math.min(b.length - s0, Math.floor(dec * 6 * sr));
+    const kd = Math.exp(-1 / (dec * sr));
+    let e = a;
+    for (let i = 0; i < n; i++) { b[s0 + i] += bq.process(src.next()) * e; e *= kd; }
   }
   return b;
 }
@@ -201,32 +216,38 @@ export function addBabble(b, r, o, sr = SR) {
   const t0 = o.t0 || 0, dur = o.dur;
   const n = Math.min(b.length - Math.floor(t0 * sr), Math.floor(dur * sr));
   const tmp = new Float32Array(n);
+  const BLOCK = 32; // pitch glide, vibrato and syllable changes are computed at block rate (inaudible, 5x faster)
+  const smooth = Math.exp(-1 / (0.035 * sr));
   for (let v = 0; v < o.voices; v++) {
     const f = range(r, o.fLo, o.fHi);
     const vg = range(r, 0.35, 1);
     const vibR = range(r, 4, 6.5), vibD = range(r, 0.004, 0.012);
     const syl = o.syllables || 0;
-    let ph = r(), gate = 0, target = r(), nextSwitch = syl > 0 ? range(r, 0.5, 1.5) / syl : Infinity;
-    const start = o.stagger ? r() * o.stagger : 0;
-    const smooth = Math.exp(-1 / (0.035 * sr));
-    for (let i = 0; i < n; i++) {
-      const t = i / sr;
-      if (t < start) continue;
-      if (t >= nextSwitch) { target = r() < 0.25 ? 0 : range(r, 0.4, 1); nextSwitch = t + range(r, 0.5, 1.5) / syl; }
-      gate = syl > 0 ? target + (gate - target) * smooth : 1;
-      const fi = f * (o.glide ? o.glide(t / dur) : 1) * (1 + vibD * Math.sin(TAU * vibR * t));
-      ph += fi / sr; ph -= Math.floor(ph);
+    let ph = r(), gate = syl > 0 ? 0 : 1, target = r(), nextSwitch = syl > 0 ? range(r, 0.5, 1.5) / syl : Infinity;
+    const start = Math.floor((o.stagger ? r() * o.stagger : 0) * sr);
+    let inc = 0;
+    for (let i = start; i < n; i++) {
+      if (((i - start) & (BLOCK - 1)) === 0) {
+        const t = i / sr;
+        if (t >= nextSwitch) { target = r() < 0.25 ? 0 : range(r, 0.4, 1); nextSwitch = t + range(r, 0.5, 1.5) / syl; }
+        inc = f * (o.glide ? o.glide(t / dur) : 1) * (1 + vibD * Math.sin(TAU * vibR * t)) / sr;
+      }
+      if (syl > 0) gate = target + (gate - target) * smooth;
+      ph += inc; if (ph >= 1) ph -= 1;
       tmp[i] += (2 * ph - 1) * vg * gate;
     }
   }
-  const fs = o.formants.map(([f, q, g]) => ({ bq: new Biquad('bandpass', f, q, 0, sr), g }));
+  const fs = o.formants.map(([f, q]) => new Biquad('bandpass', f, q, 0, sr));
+  const gs = o.formants.map((x) => x[2]);
   const s0 = Math.floor(t0 * sr);
   const amp = (o.amp ?? 1) / Math.sqrt(o.voices);
+  let env = 1;
   for (let i = 0; i < n; i++) {
     const x = tmp[i];
     let y = 0;
-    for (let k = 0; k < fs.length; k++) y += fs[k].bq.process(x) * fs[k].g;
-    b[s0 + i] += y * amp * (o.env ? o.env(i / n) : 1);
+    for (let k = 0; k < fs.length; k++) y += fs[k].process(x) * gs[k];
+    if (o.env && (i & (BLOCK - 1)) === 0) env = o.env(i / n);
+    b[s0 + i] += y * amp * env;
   }
   return b;
 }

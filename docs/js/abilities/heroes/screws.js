@@ -35,6 +35,7 @@ export class ScrewsMagneticRecycle extends AbilityBase {
     force: 1.5,              // m/s^2 rolling acceleration toward Screws' half
     duration: 4,             // s the spot stays magnetised (spec)
     maxRollSpeed: 3,         // m/s along the pull direction
+    startSpeed: 0.35,        // m/s nudge that gets a resting ball rolling (beats the resting-speed dead band)
     arriveDepth: 1.5,        // m inside Screws' half: the ball has come home
     targetDepthFrac: 0.45,   // aim point depth as a share of the half length
     rollHeight: 0.25,        // m above resting height: only rolling/low balls are pulled
@@ -129,8 +130,9 @@ export class ScrewsMagneticRecycle extends AbilityBase {
     _dir.multiplyScalar(1 / len);
     const along = ball.velocity.x * _dir.x + ball.velocity.z * _dir.z;
     if (along >= p.maxRollSpeed) return true;
-    const add = Math.min(p.force * dt, p.maxRollSpeed - along);
-    _v.copy(ball.velocity).addScaledVector(_dir, add);
+    // A resting ball first gets a nudge above the rolling-resistance dead band, then accelerates smoothly.
+    const target = Math.min(p.maxRollSpeed, Math.max(along + p.force * dt, p.startSpeed));
+    _v.copy(ball.velocity).addScaledVector(_dir, target - along);
     setBallVelocity(ball, _v);
     return true;
   }

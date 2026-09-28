@@ -94,7 +94,7 @@ export const ARENA_LOOK = Object.freeze({
   seatColor: 0x1c2740,
   screenGain: 1.6,               // video board brightness (HDR, slight bloom)
   ribbonGain: 1.35,
-  suiteGlow: [3.2, 2.4, 1.5],     // suite downlights (small, bright)
+  suiteGlow: [2.6, 2.2, 1.7],     // suite downlights (small, bright, ~3500 K)
   suiteInterior: [0.07, 0.05, 0.035], // dim warm interior seen through the tinted glass
   exitGlow: [0.1, 1.8, 0.45],
 });
@@ -339,7 +339,8 @@ export class Arena {
     for (const t of this._textures) t.dispose();
     this._materials.length = 0; this._textures.length = 0;
     this.colliders.length = 0; this.lights.length = 0; this.keyLights.length = 0; this.fillLights.length = 0;
-    this.group = null;
+    this.group = null; this.floor = null; this.seats = null; this.hemi = null; this.scoreboard = null;
+    this.crowd = new Crowd();
     this._built = false;
   }
 
@@ -484,7 +485,6 @@ export class Arena {
     const rng = new Rng(1337);
     const seatSpots = [];
     const slots = [];
-    const railC = [0.8, 0.8, 0.8];
     for (const s of [-1, 1]) {
       const yawToCourt = s > 0 ? -Math.PI / 2 : Math.PI / 2;
       for (let i = 0; i < A.rows; i++) {
@@ -536,7 +536,7 @@ export class Arena {
       for (let z = -ez + 1; z <= ez - 1 + 1e-6; z += 3) {
         B.dark.span(s * (backX - 0.12), A.suites.y0 - 0.1, z - 0.08, s * (backX - 0.01), A.suites.y1 + 0.1, z + 0.08);
         if (z + 1.5 < ez - 1) {
-          for (const dz of [0.9, 2.1]) B.glow.quad(0.34, 0.05, s * (backX - 0.035), A.suites.y1 - 0.18, z + dz, yawToCourt, null, 1, ARENA_LOOK.suiteGlow);
+          for (const dz of [0.9, 2.1]) B.glow.quad(0.5, 0.08, s * (backX - 0.035), A.suites.y1 - 0.18, z + dz, yawToCourt, null, 1, ARENA_LOOK.suiteGlow);
           B.glow.quad(2.6, sh * 0.35, s * (backX - 0.03), A.suites.y0 + sh * 0.18, z + 1.5, yawToCourt, null, 1, ARENA_LOOK.suiteInterior);
         }
       }

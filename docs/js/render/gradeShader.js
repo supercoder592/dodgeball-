@@ -117,9 +117,9 @@ export const GradeShader = {
       // Danger Sense: red edges beating like a pulse.
       if (uDanger > 0.001) {
         float box = max(abs(c0.x), abs(c0.y)) * 2.0;
-        float e = smoothstep(0.55, 1.05, box * 0.55 + edge * 0.6);
-        float beat = 0.7 + 0.3 * sin(uTime * 9.0);
-        col = mix(col, vec3(0.9, 0.03, 0.02) * (0.35 + lum), clamp(e * uDanger * beat, 0.0, 0.85));
+        float e = smoothstep(0.7, 1.15, box * 0.55 + edge * 0.6);
+        float beat = 0.65 + 0.35 * sin(uTime * 9.0);
+        col = mix(col, vec3(0.75, 0.025, 0.015) * (0.25 + lum), clamp(e * uDanger * beat, 0.0, 0.7));
       }
 
       // Vignette (optical falloff).

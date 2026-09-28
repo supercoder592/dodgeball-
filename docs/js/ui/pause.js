@@ -190,8 +190,11 @@ class PauseMenu {
   _showPage(page) {
     this.page = page;
     for (const k in this._pages) this._pages[k].classList.toggle('active', k === page);
+    this.root.classList.toggle('page-controls', page === 'controls');
+    const panel = this.root.querySelector('.pz-panel');
+    if (panel) panel.scrollTop = 0;
     this._focus = 0;
-    this._applyFocus();
+    this._applyFocus(false);
   }
 
   _items() { const p = this._pages[this.page]; return p ? p.querySelectorAll('.du-nav-item') : []; }
@@ -209,11 +212,11 @@ class PauseMenu {
     this._applyFocus();
   }
 
-  _applyFocus() {
+  _applyFocus(scroll = true) {
     const items = this._items();
     for (let i = 0; i < items.length; i++) items[i].classList.toggle('focus', i === this._focus);
     const el = items[this._focus];
-    if (el && el.scrollIntoView && this.page !== 'main') el.scrollIntoView({ block: 'nearest' });
+    if (scroll && el && el.scrollIntoView && this.page !== 'main') el.scrollIntoView({ block: 'nearest' });
   }
 
   _adjust(dir) {

@@ -70,7 +70,7 @@ export const BALL_PHYS = Object.freeze({
 
 /** Material look per style (colour is multiplied with the greyscale pebble albedo). */
 export const BALL_LOOK = Object.freeze({
-  standard: { color: 0xa3151a, emissive: 0x000000, emissiveIntensity: 0, roughness: 1.0, clearcoat: 0.3, clearcoatRoughness: 0.45, flicker: 0 },
+  standard: { color: 0xc01b22, emissive: 0x000000, emissiveIntensity: 0, roughness: 1.0, clearcoat: 0.3, clearcoatRoughness: 0.45, flicker: 0 },
   meteor: { color: 0x3a1206, emissive: 0xff5212, emissiveIntensity: 2.6, roughness: 1.0, clearcoat: 0.1, clearcoatRoughness: 0.6, flicker: 0.35 },
   beam: { color: 0xdff6ff, emissive: 0x9fe9ff, emissiveIntensity: 3.2, roughness: 0.6, clearcoat: 0.6, clearcoatRoughness: 0.2, flicker: 0.12 },
   glue: { color: 0x3f8a16, emissive: 0x0c2a02, emissiveIntensity: 0.4, roughness: 0.45, clearcoat: 1.0, clearcoatRoughness: 0.08, flicker: 0 },

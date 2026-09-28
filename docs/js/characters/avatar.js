@@ -65,6 +65,7 @@ export const AVATAR = Object.freeze({
   ring: { size: 1.05, opacity: 0.5, localOpacity: 0.8, y: 0.012 },
   recoverTime: 0.35,
   ghost: { opacity: 0.5, rim: 1.4, rimAlpha: 0.45, tint: 0.55 },
+  glassOpacity: 0.5,                 // visors/face shields: texture alpha is dirty/smoked plastic; keep faces readable
   clone: { mirrorSpeedTolerance: 1.5 },
 });
 
@@ -86,6 +87,7 @@ const CLONE_OWN_KEYS = new Set(['idle', 'breathe', 'lookaround', 'walk', 'run', 
 const FINGER_CHAINS = [['Finger0', 'Finger01', 'Finger02'], ['Finger1', 'Finger11', 'Finger12'], ['Finger2', 'Finger21', 'Finger22'],
   ['Finger3', 'Finger31', 'Finger32'], ['Finger4', 'Finger41', 'Finger42']];
 const FINGER_JOINT_SCALE = [1, 1.15, 0.9];
+const SIDES = Object.freeze(['r', 'l']);
 
 // =================================================================================================== temporaries
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
@@ -140,6 +142,12 @@ function rotateBoneWorldQ(bone, qWorld) {
   parentWorldQuat(bone, _tq);
   _tq2.copy(_tq).invert().multiply(qWorld).multiply(_tq);
   bone.quaternion.premultiply(_tq2);
+}
+/** target += color * s (THREE.Color has no addScaledColor). */
+function addScaledColor(target, color, s) {
+  if (s === 0) return target;
+  target.r += color.r * s; target.g += color.g * s; target.b += color.b * s;
+  return target;
 }
 /** Self-only world matrix refresh (parent assumed fresh). */
 function refresh(obj) { obj.updateWorldMatrix(false, false); }
@@ -578,7 +586,6 @@ export class Avatar {
     this._buildRing();
     this._animPose = new Float32Array(this._nodes.length * 7);
     this._recoverPose = new Float32Array(this._nodes.length * 7);
-    this._cloneScratch = new Float32Array(this._nodes.length * 7);
     capturePose(this._nodes, this._animPose);
 
     if (this.player && this.player.root && this.root.parent !== this.player.root) this.player.root.add(this.root);
@@ -662,7 +669,7 @@ export class Avatar {
       if (analysis.mode === 'glass') {
         // Visor / safety glasses: alpha-blended, glossy, never writes depth.
         role = 'glass';
-        mat.transparent = true; mat.depthWrite = false; mat.alphaTest = 0;
+        mat.transparent = true; mat.depthWrite = false; mat.alphaTest = 0; mat.opacity = AVATAR.glassOpacity;
         mat.sheen = 0; mat.roughness = 0.35; mat.clearcoat = 1; mat.clearcoatRoughness = 0.04; mat.specularIntensity = 1;
       } else {
         mat.alphaTest = spec.alphaTest || 0.35;
@@ -1165,7 +1172,7 @@ export class Avatar {
     const durs = this._clipSet.durations;
     for (const key of this._keys) {
       const d = durs[key];
-      if (GAIT_KEYS.includes(key)) this._times[key] = frac(this._phase + this._strides[key].offset) * d;
+      if (this._strides[key]) this._times[key] = frac(this._phase + this._strides[key].offset) * d;
       else if (!(os && os.key === key) && LOOPING.has(key)) this._times[key] = (this._times[key] + dt) % d;
       const action = this._actions[key];
       action.time = this._times[key];
@@ -1254,13 +1261,9 @@ export class Avatar {
     }
     if (this._absorbT >= 0) flex += A.catch.absorbFlex * Math.sin(Math.PI * this._absorbT);
     if (B.spine1 && B.chest && (Math.abs(twist) + Math.abs(flex) + Math.abs(side) > 1e-4)) {
-      const shares = [[B.spine1, 0.45], [B.chest, 0.55]];
-      for (const [bone, share] of shares) {
-        rotateBoneWorld(bone, _UP, twist * share);
-        rotateBoneWorld(bone, _left, flex * share);   // + = bend forward
-        rotateBoneWorld(bone, _fwd, side * share);    // + = bend right
-        refresh(bone);
-      }
+      // distributed over the two upper spine links (Spine1 45 %, Spine2 55 %)
+      this._bendSpineLink(B.spine1, 0.45, twist, flex, side);
+      this._bendSpineLink(B.chest, 0.55, twist, flex, side);
       B.spine1.updateMatrixWorld(true);
     }
 
@@ -1271,6 +1274,14 @@ export class Avatar {
 
     // ---- 4. arms (two-bone IK) + 5. hands
     this._updateArms(dt, inp, s);
+  }
+
+  /** Rotates one spine link by its share of twist (about up), flex (+ forward) and side bend (+ right). */
+  _bendSpineLink(bone, share, twist, flex, side) {
+    rotateBoneWorld(bone, _UP, twist * share);
+    rotateBoneWorld(bone, _left, flex * share);
+    rotateBoneWorld(bone, _fwd, side * share);
+    refresh(bone);
   }
 
   /** Finds the most urgent incoming live ball (predicted impact) - drives LookAt and the catch reach. */
@@ -1402,7 +1413,7 @@ export class Avatar {
 
     // eyes: converge on the target (clamped around the face direction)
     if (w > 0.05 && weight > 0) {
-      for (const side of ['l', 'r']) {
+      for (const side of SIDES) {
         const eye = B[side + 'Eye'];
         const local = this._bind.eyes[side];
         if (!eye || !local) continue;
@@ -1507,7 +1518,7 @@ export class Avatar {
 
     // palms: face the ball when catching, cradle when carrying, forward on the wind-up
     if (this._palmW > 0.02 && palmMode) {
-      for (const side of ['r', 'l']) {
+      for (const side of SIDES) {
         const ikw = side === 'r' ? r.w : l.w;
         if (ikw < 0.05) continue;
         const out = side === 'r' ? _right : _left;
@@ -1671,8 +1682,10 @@ export class Avatar {
     for (const e of this._mats) {
       const m = e.mat, u = e.u;
       m.color.copy(e.baseColor).lerp(this._tintColor, this._tintAmt).lerp(_ICE, fz * A.frozen.tint);
-      m.emissive.copy(_BLACK).addScaledColor(this._flashColor, flashI)
-        .addScaledColor(this._tintColor, this._tintAmt * A.tint.emissive).addScaledColor(_ICE_GLOW, fz);
+      m.emissive.copy(_BLACK);
+      addScaledColor(m.emissive, this._flashColor, flashI);
+      addScaledColor(m.emissive, this._tintColor, this._tintAmt * A.tint.emissive);
+      addScaledColor(m.emissive, _ICE_GLOW, fz);
       if (e.role !== 'glass') {
         m.roughness = e.baseRoughness + (A.frozen.roughness - e.baseRoughness) * fz;
         const cc = Math.max(e.baseClearcoat, fz > 0.02 ? fz : 0);
@@ -1804,7 +1817,7 @@ export class Avatar {
     const durs = this._clipSet.durations;
     if (durs.idle) h._times.idle = ((h._times.idle || 0) + dt) % durs.idle;
     for (const key of this._keys) {
-      if (GAIT_KEYS.includes(key)) h._times[key] = frac(h._phase + this._strides[key].offset) * durs[key];
+      if (this._strides[key]) h._times[key] = frac(h._phase + this._strides[key].offset) * durs[key];
       const a = h._actions[key];
       a.time = h._times[key] || 0;
       a.setEffectiveWeight(h._w[key] || 0);

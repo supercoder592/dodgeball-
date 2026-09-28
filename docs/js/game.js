@@ -55,6 +55,8 @@ class Game {
     this.hittables = new Set();
     this.config = { quality: 'high', seed: 1, spectate: false, autoplay: false, debug: false, params: new URLSearchParams() };
     this.fixedStep = 1 / 60;
+    /** Largest real frame delta simulated per frame (s). Raised by ?maxdt= for slow headless test runs. */
+    this.maxFrameDt = 0.1;
     this._accumulator = 0;
     this._systems = [];
     this._running = false;
@@ -90,7 +92,7 @@ class Game {
   /** One rendered frame. Exposed for tests (window.__DU.step). */
   tick(ts = performance.now()) {
     const t0 = performance.now();
-    const realDt = Math.min(0.1, Math.max(0, (ts - this._lastTs) / 1000));
+    const realDt = Math.min(this.maxFrameDt, Math.max(0, (ts - this._lastTs) / 1000));
     this._lastTs = ts;
     const time = this.time;
     time.realDt = realDt;
@@ -103,13 +105,14 @@ class Game {
     // Fixed-step simulation on scaled time (max 5 steps/frame to avoid spirals).
     this._accumulator += dt;
     let steps = 0;
-    while (this._accumulator >= this.fixedStep && steps < 5) {
+    const maxSteps = Math.max(5, Math.ceil(this.maxFrameDt / this.fixedStep) + 1);
+    while (this._accumulator >= this.fixedStep && steps < maxSteps) {
       this._accumulator -= this.fixedStep;
       time.now += this.fixedStep;
       for (const { system } of this._systems) if (system.fixedUpdate) this._safe(system, 'fixedUpdate', this.fixedStep);
       steps++;
     }
-    if (steps === 5) this._accumulator = 0;
+    if (steps === maxSteps) this._accumulator = 0;
     this.stats.simSteps = steps;
 
     for (const { system } of this._systems) if (system.update) this._safe(system, 'update', dt, realDt);

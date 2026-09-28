@@ -55,7 +55,8 @@ html, body {
   line-height: 1.25;
   overflow: hidden;
 }
-#ui button { font-family: inherit; color: inherit; }
+/* Zero-specificity defaults so component rules (.on / .focus states) always win. */
+:where(#ui) button { font-family: inherit; color: inherit; }
 #ui small { font-weight: 600; }
 kbd {
   font-family: var(--num);
@@ -77,10 +78,10 @@ kbd {
 /* ---------------------------------------------------------------- Danger Sense edges */
 .hud-danger { inset: 0; opacity: var(--dz, 0); pointer-events: none; }
 .hud-danger i { position: absolute; display: block; }
-.hud-danger .dg-l { left: 0; top: 0; bottom: 0; width: 20vw; opacity: var(--dl, 0.5); background: linear-gradient(90deg, rgba(255, 22, 22, 0.8), rgba(255, 22, 22, 0.25) 35%, transparent); }
-.hud-danger .dg-r { right: 0; top: 0; bottom: 0; width: 20vw; opacity: var(--dr, 0.5); background: linear-gradient(270deg, rgba(255, 22, 22, 0.8), rgba(255, 22, 22, 0.25) 35%, transparent); }
-.hud-danger .dg-t { left: 0; right: 0; top: 0; height: 20vh; opacity: var(--dt, 0.5); background: linear-gradient(180deg, rgba(255, 22, 22, 0.75), rgba(255, 22, 22, 0.2) 35%, transparent); }
-.hud-danger .dg-b { left: 0; right: 0; bottom: 0; height: 20vh; opacity: var(--db, 0.5); background: linear-gradient(0deg, rgba(255, 22, 22, 0.75), rgba(255, 22, 22, 0.2) 35%, transparent); }
+.hud-danger .dg-l { left: 0; top: 0; bottom: 0; width: 18vw; opacity: var(--dl, 0.5); background: linear-gradient(90deg, rgba(255, 22, 22, 0.72), rgba(255, 22, 22, 0.18) 35%, transparent); }
+.hud-danger .dg-r { right: 0; top: 0; bottom: 0; width: 18vw; opacity: var(--dr, 0.5); background: linear-gradient(270deg, rgba(255, 22, 22, 0.72), rgba(255, 22, 22, 0.18) 35%, transparent); }
+.hud-danger .dg-t { left: 0; right: 0; top: 0; height: 16vh; opacity: var(--dt, 0.5); background: linear-gradient(180deg, rgba(255, 22, 22, 0.65), rgba(255, 22, 22, 0.15) 35%, transparent); }
+.hud-danger .dg-b { left: 0; right: 0; bottom: 0; height: 16vh; opacity: var(--db, 0.5); background: linear-gradient(0deg, rgba(255, 22, 22, 0.65), rgba(255, 22, 22, 0.15) 35%, transparent); }
 
 /* ---------------------------------------------------------------- scoreboard */
 .sb {
@@ -423,7 +424,7 @@ kbd {
 .lt-rally.is-on { display: inline-block; }
 .pr { display: none; left: 50%; bottom: calc(66px + var(--safe-b)); transform: translateX(-50%); padding: 5px 12px; font-size: 12px; font-weight: 800; letter-spacing: 0.1em; background: rgba(255, 255, 255, 0.92); color: #0b0d10; border-radius: 3px; white-space: nowrap; }
 .pr.is-on { display: block; animation: du-fade 0.2s ease-out; }
-.lh { display: none; left: 50%; top: 60%; transform: translateX(-50%); padding: 9px 18px; font-size: 13px; font-weight: 900; letter-spacing: 0.16em; background: var(--panel-strong); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 3px; white-space: nowrap; }
+.lh { display: none; left: 50%; top: 70%; transform: translateX(-50%); padding: 9px 18px; font-size: 13px; font-weight: 900; letter-spacing: 0.16em; background: var(--panel-strong); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 3px; white-space: nowrap; }
 .lh.is-on { display: block; animation: du-breathe 1.8s ease-in-out infinite; }
 .lh small { margin-left: 8px; color: var(--fg-dim); letter-spacing: 0.08em; }
 
@@ -665,12 +666,14 @@ kbd {
 .pz-btn.pz-primary.focus small { color: rgba(11, 13, 16, 0.6); }
 .pz-back { margin-top: 8px; }
 .pz-controls { width: 100%; border-collapse: collapse; font-size: 12px; }
-.pz-controls th, .pz-controls td { padding: 5px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); text-align: left; vertical-align: middle; }
+.pz-controls th, .pz-controls td { padding: 3px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); text-align: left; vertical-align: middle; }
 .pz-controls thead th { font-size: 10px; letter-spacing: 0.14em; color: var(--fg-dim); font-weight: 800; }
 .pz-controls th small, .pz-controls thead th small { display: block; font-size: 10px; color: var(--fg-faint); font-weight: 600; }
 .pz-controls tbody th { font-weight: 800; }
+.pz-controls tbody th small { display: inline; margin-left: 6px; }
+.pz.page-controls .pz-panel { width: min(720px, calc(100vw - 32px)); }
 .pz-controls kbd { white-space: nowrap; }
-.pz-tips { margin: 10px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.45; color: rgba(243, 245, 247, 0.85); }
+.pz-tips { margin: 10px 0 0; padding-left: 18px; font-size: 11.5px; line-height: 1.4; color: rgba(243, 245, 247, 0.85); }
 .pz-tips li { margin-bottom: 6px; }
 .pz-tips small { display: block; color: var(--fg-dim); font-weight: 500; }
 .pz-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }

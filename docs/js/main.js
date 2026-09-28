@@ -50,6 +50,9 @@ async function boot() {
     quality: detectQuality(), seed, params,
     spectate: flag('spectate'), autoplay: flag('autoplay') || flag('spectate'), debug: flag('debug'),
   };
+  // Test hook: ?maxdt=0.5 lets slow software-rendered headless runs simulate in (near) real time.
+  const maxdt = Number(params.get('maxdt'));
+  if (maxdt > 0) game.maxFrameDt = Math.min(1, maxdt);
   Loading.show();
   try {
     const container = document.getElementById('app');

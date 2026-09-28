@@ -26,18 +26,19 @@ const CH = Object.fromEntries(PULSE_CHANNELS.map((c, i) => [c, i]));
  * frame; the perfect catch is the brightest, most saturated beat; the ultimate is a heavy, wide punch.
  */
 export const PULSE_PROFILES = Object.freeze({
-  hit:          { flash: 0.10, exposure: 0.05, ca: 0.0035, vignette: 0.12, zoom: 0.004 },
-  heavyHit:     { flash: 0.22, exposure: 0.10, ca: 0.0090, vignette: 0.30, saturation: -0.25, zoom: 0.012 },
-  perfectCatch: { flash: 0.28, exposure: 0.18, ca: 0.0040, saturation: 0.35, vignette: -0.08, zoom: 0.008 },
-  ultimate:     { exposure: 0.12, saturation: 0.30, ca: 0.0070, vignette: 0.35, zoom: 0.015 },
-  freeze:       { freeze: 1.0, saturation: -0.20, ca: 0.0020 },
-  rewind:       { rewind: 1.0, ca: 0.0060 },
-  danger:       { danger: 1.0, vignette: 0.10 },
+  // NOTE: the grade runs in LINEAR HDR before ACES - additive flash values are small (0.05 lifts black noticeably).
+  hit:          { flash: 0.020, exposure: 0.06, ca: 0.0018, vignette: 0.10, zoom: 0.004 },
+  heavyHit:     { flash: 0.045, exposure: 0.12, ca: 0.0045, vignette: 0.22, saturation: -0.22, zoom: 0.010 },
+  perfectCatch: { flash: 0.050, exposure: 0.22, ca: 0.0022, saturation: 0.20, vignette: -0.08, zoom: 0.007 },
+  ultimate:     { flash: 0.020, exposure: 0.10, ca: 0.0035, saturation: 0.22, vignette: 0.28, zoom: 0.012 },
+  freeze:       { freeze: 1.0, saturation: -0.20, ca: 0.0012 },
+  rewind:       { rewind: 1.0, ca: 0.0035 },
+  danger:       { danger: 1.0, vignette: 0.08 },
 });
 
 /** Per-channel clamp [min, max] of the summed result. */
 export const PULSE_LIMITS = Object.freeze({
-  exposure: [-0.5, 1.0], flash: [0, 0.8], ca: [0, 0.025], saturation: [-1, 1], vignette: [-0.3, 0.8],
+  exposure: [-0.5, 0.8], flash: [0, 0.15], ca: [0, 0.012], saturation: [-1, 0.6], vignette: [-0.3, 0.7],
   danger: [0, 1], freeze: [0, 1], rewind: [0, 1], zoom: [0, 0.05],
 });
 

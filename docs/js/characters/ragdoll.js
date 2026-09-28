@@ -41,7 +41,7 @@ export const RAGDOLL = Object.freeze({
   maxLinearSpeed: 18,
   maxAngularSpeed: 22,
   maxInheritedSpeed: 12,     // clamp on velocities inherited from the animation
-  impulseGain: 20,           // |J| / mass * gain -> whole-body delta-v (see ragdollDeltaV)
+  impulseGain: 6,            // |J| / mass * gain -> whole-body delta-v: Health sends ~20-90 N*s -> ~1.6-6.5 m/s
   minDeltaV: 1.1,
   maxDeltaV: 6.5,
   strikeShare: 0.45,         // extra share of the impulse given to the struck body part (spin)
@@ -536,7 +536,7 @@ export class Ragdoll {
       b.position.set(part.prevPos.x, part.prevPos.y, part.prevPos.z);
       b.quaternion.set(part.prevQuat.x, part.prevQuat.y, part.prevQuat.z, part.prevQuat.w);
       b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
-      b.type = CANNON.Body.STATIC; b.updateMassProperties();
+      b.mass = 0; b.type = CANNON.Body.STATIC; b.updateMassProperties();
       part.curPos.copy(part.prevPos); part.curQuat.copy(part.prevQuat);
     }
   }

@@ -39,7 +39,7 @@ export const CROWD = Object.freeze({
   swayAmp: 0.025,           // idle weight shift at head height (m)
   jumpAmp: 0.18,            // jump height at full excitement (m)
   idleExcite: 0.06,         // a few fans always bounce
-  nearHide: 4.0,            // cards closer than this (3D) to the camera collapse (no flat-card look up close)
+  nearHide: 9.0,            // cards closer than this (3D) to the camera collapse (no flat cards filling broadcast rail shots)
   exciteDecay: 0.45,        // excitement lost per real second
   loadTimeout: 20000,       // ms before giving up on the bake (boot must never hang on the crowd)
 });
@@ -92,10 +92,13 @@ export class Crowd {
   async build({ slots, renderer, envTexture = null, cellWidth = 128, seed = 77 }) {
     if (!slots || !slots.length || !renderer) return null;
     let timer = null;
-    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(null), CROWD.loadTimeout); });
-    const baked = await Promise.race([this._bake(renderer, envTexture, cellWidth), timeout]);
+    const token = { cancelled: false };
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => { token.cancelled = true; console.warn('[crowd] asset load timed out - stands stay empty'); resolve(null); }, CROWD.loadTimeout);
+    });
+    const baked = await Promise.race([this._bake(renderer, envTexture, cellWidth, token), timeout]);
     clearTimeout(timer);
-    if (!baked) return null;
+    if (!baked || token.cancelled) return null;
     this.atlas = baked.rt;
     this._createMesh(slots, baked, seed);
     this._subscribe();
@@ -121,7 +124,7 @@ export class Crowd {
 
   // ================================================================== baking
 
-  async _bake(renderer, envTexture, cellW) {
+  async _bake(renderer, envTexture, cellW, token = { cancelled: false }) {
     const assets = game.assets;
     const manifest = assets && assets.manifest;
     if (!manifest || !manifest.heroes) return null;
@@ -179,7 +182,10 @@ export class Crowd {
     for (let m = 0; m < models.length; m++) {
       for (const p of CROWD.poses) if (clips[models[m].g][p.clip]) cells.push({ m, pose: p });
     }
-    if (!cells.length) return null;
+    if (!cells.length || token.cancelled) {
+      for (const info of models) for (const t of Object.values(info.maps)) t.dispose();
+      return null;
+    }
     const cols = Math.min(CROWD.atlasColumns, cells.length), rows = Math.ceil(cells.length / cols);
     const cellH = cellW * 2, W = cols * cellW, H = rows * cellH;
     const rt = new THREE.WebGLRenderTarget(W, H, {
