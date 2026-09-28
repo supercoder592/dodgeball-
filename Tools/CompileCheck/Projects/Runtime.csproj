@@ -12,5 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="Core.csproj" />
     <ProjectReference Include="InputSystemStubs.csproj" />
+    <!-- Runtime assemblies compiled for the Editor may use UnityEditor inside #if UNITY_EDITOR blocks. -->
+    <Reference Include="UnityEditor"><HintPath>$(UnityCache)sdk/lib/UnityEditor.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 </Project>

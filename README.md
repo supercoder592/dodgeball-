@@ -1,15 +1,26 @@
 # Dodgeball Ultra 🏐 — 3v3 超能力躲避球
 
-**Unity 6 LTS · HDRP 寫實渲染 · 真人動作捕捉角色 · 10 名英雄 · 3v3（你 + 5 個 AI）**
+## ▶ 立即遊玩：**https://supercoder592.github.io/dodgeball-/**
+
+**瀏覽器即玩（Three.js / WebGL）· Unity 6 LTS + HDRP 版本 · 真人動作捕捉角色 · 10 名英雄 · 3v3（你 + 5 個 AI）**
 
 > 寫實風格的 3v3 超能力躲避球。角色使用 **Microsoft Rocketbox 真人模型**（完整骨架綁定、寫實貼圖、MIT 授權）與
 > **真人動作捕捉動畫**，不是程式生成的人體。投球、接球等運動動作以 IK 疊加在動捕動畫上；被淘汰時切換為物理布娃娃（Ragdoll）。
+> 看台上的觀眾也是用同一批真人模型與動捕動畫烘焙出來的。
 
 *English version below.*
 
+### 網頁版（GitHub Pages）
+
+* 直接開啟上面的網址即可遊玩，電腦（鍵盤滑鼠 / 手把）與手機（觸控）皆可。
+* 開始畫面選英雄、隊伍與難度，或按「觀戰」看 AI 對戰。
+* 網址參數：`?quality=low|medium|high`、`?spectate=1`（AI 對戰）、`?autoplay=1&hero=Rayne`、`?difficulty=hard`。
+* 角色展示頁：`/dev/avatar-viewer.html`。
+* 原始碼在 `docs/`（原生 ES modules，不需 build），更新網站：`Tools/web/deploy_pages.sh`。
+
 ---
 
-## 快速開始（繁體中文）
+## Unity 版快速開始（繁體中文）
 
 1. 安裝 **Unity 6 LTS（6000.0.x）**，用 Unity Hub「Add project from disk」開啟此資料夾。
    首次開啟會自動安裝 HDRP、Input System 等套件（需數分鐘）。若 Input System 詢問是否啟用新輸入系統，選 **Yes** 並重新啟動編輯器。
@@ -60,7 +71,14 @@
 
 ---
 
-## Quick start (English)
+## Play in the browser (English)
+
+**https://supercoder592.github.io/dodgeball-/** — the web build (three.js r186 + cannon-es, no install) lives in `docs/` and
+is published from the `gh-pages` branch by `Tools/web/deploy_pages.sh`. Realistic Rocketbox avatars/clips are converted
+by `Tools/web/build_assets.py`; `node Tools/web/smoke.mjs` plays a headless AI-vs-AI match and reports errors +
+screenshots. Contract: `Tools/web/WEB_ARCHITECTURE.md`.
+
+## Quick start (Unity, English)
 
 1. Open the folder with **Unity 6 LTS (6000.0.x)**. HDRP and the Input System install automatically (accept the Input
    System's "enable new backend" prompt and restart).
