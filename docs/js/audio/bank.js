@@ -840,6 +840,10 @@ export const SOUND_ALIASES = {
   quake: 'earthquake', slam: 'earthquake', earthquakeSlam: 'earthquake', charge: 'tackle', tackleIntercept: 'tackle',
   ultimate: 'ultimateCast', cast: 'abilityCast', skill: 'abilityCast', danger: 'heartbeat', dangerSense: 'heartbeat',
   click: 'uiClick', confirm: 'uiConfirm', fail: 'abilityFail', ultimateReady: 'ultReady', reviveBeam: 'revive',
+  // Ability-module ids (heroes/*.js)
+  ironMitts: 'magnetClunk', metalClang: 'magnetClunk', slamWindup: 'throwHeavy', tackleCharge: 'tackle',
+  tackleDeflect: 'shieldImpact', tackleImpact: 'heavyHit', tackleThrow: 'throwHeavy', turretFold: 'turretServo',
+  turretLoad: 'turretServo', turretMuzzle: 'turretPop', turretReady: 'turretServo', glueThrow: 'throw',
 };
 
 /** Keyword fallback for unknown ids (first match wins). */

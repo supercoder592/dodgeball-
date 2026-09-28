@@ -57,6 +57,8 @@ class Game {
     this.fixedStep = 1 / 60;
     /** Largest real frame delta simulated per frame (s). Raised by ?maxdt= for slow headless test runs. */
     this.maxFrameDt = 0.1;
+    /** Skip drawing (test hook ?norender=1): the simulation still runs every frame. */
+    this.skipRender = false;
     this._accumulator = 0;
     this._systems = [];
     this._running = false;
@@ -117,7 +119,7 @@ class Game {
 
     for (const { system } of this._systems) if (system.update) this._safe(system, 'update', dt, realDt);
     for (const { system } of this._systems) if (system.lateUpdate) this._safe(system, 'lateUpdate', dt, realDt);
-    if (this.renderer) this.renderer.render(realDt);
+    if (this.renderer && !this.skipRender) this.renderer.render(realDt);
 
     const ms = performance.now() - t0;
     this.stats.frameMs = this.stats.frameMs * 0.9 + ms * 0.1;

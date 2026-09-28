@@ -53,6 +53,8 @@ async function boot() {
   // Test hook: ?maxdt=0.5 lets slow software-rendered headless runs simulate in (near) real time.
   const maxdt = Number(params.get('maxdt'));
   if (maxdt > 0) game.maxFrameDt = Math.min(1, maxdt);
+  // Test hook: ?norender=1 simulates at full frame rate without drawing (gameplay audits in software-GL browsers).
+  if (params.get('norender') === '1') game.skipRender = true;
   Loading.show();
   try {
     const container = document.getElementById('app');

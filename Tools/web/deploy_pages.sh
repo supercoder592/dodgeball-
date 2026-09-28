@@ -20,6 +20,8 @@ git clean -fdxq
 cp -r "$REPO/docs/." .
 rm -f ARCHITECTURE.md
 touch .nojekyll
+# Build stamp: lets you (and the smoke test) confirm which build GitHub Pages is serving.
+printf '{ "commit": "%s", "built": "%s" }\n' "$(git -C "$REPO" rev-parse --short HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > version.json
 git add -A
 git commit -q -m "$MSG" || echo "nothing to deploy"
 git push -q origin gh-pages
