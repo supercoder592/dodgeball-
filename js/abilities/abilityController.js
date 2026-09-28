@@ -5,6 +5,9 @@ import { EV } from '../core/events.js';
 import { ZONE } from '../core/constants.js';
 import { abilityRegistry, SLOT } from './abilityBase.js';
 
+/** Smallest passive ultimate-charge change (0..1) worth an EV.UltCharge event. */
+const ULT_PASSIVE_EVENT_STEP = 0.005;
+
 export class AbilityController {
   /** @param {import('../gameplay/player.js').Player} owner */
   constructor(owner) {
@@ -12,6 +15,8 @@ export class AbilityController {
     this.meter = new Meter(1, 0);
     /** Ultimate charge per second while infield in a live round (0..1 scale). */
     this.passiveUltPerSecond = 0.008;
+    /** Charge value carried by the last EV.UltCharge event (passive gains are throttled against it). */
+    this._announced = 0;
     this.passive = null; this.skill = null; this.ultimate = null;
     this.all = [];
   }
@@ -74,6 +79,10 @@ export class AbilityController {
 
   _publish(before, becameReady, reason) {
     if (Math.abs(before - this.meter.value) < 1e-6) return;
-    game.events.emit(EV.UltCharge, { player: this.owner, value: this.meter.normalized, becameReady: !!becameReady, reason });
+    const value = this.meter.normalized;
+    // Passive trickle charges every frame: only announce visible steps (readers poll ultimateCharge for the bar).
+    if (reason === 'passive' && !becameReady && Math.abs(value - this._announced) < ULT_PASSIVE_EVENT_STEP) return;
+    this._announced = value;
+    game.events.emit(EV.UltCharge, { player: this.owner, value, becameReady: !!becameReady, reason });
   }
 }
