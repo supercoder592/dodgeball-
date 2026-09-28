@@ -382,6 +382,7 @@ namespace DodgeballUltra.Characters
         private void OnBallThrown(BallThrownEvent e)
         {
             if (Owner == null || e.Thrower != Owner) return;
+            if (!HumanoidUtil.IsBodyThrow(Owner, in e)) return; // turret shots etc.: the arm stays where it is
             StartWhip(e.Velocity, e.IsPass ? passWhipIntensity : 1f);
         }
 

@@ -429,6 +429,27 @@ namespace DodgeballUltra.Characters
             return m > 1e-6f ? m : 1f;
         }
 
+        // ------------------------------------------------------------------ throws
+
+        /// <summary>Distance (m) from the thrower's hand beyond which an ability throw was not released by the body.</summary>
+        public const float BodyThrowMaxHandDistance = 1f;
+
+        /// <summary>
+        /// True when a throw credited to <paramref name="thrower"/> was really released by the body (throw animation and
+        /// IK whip should play). False for shots fired by a device on the thrower's behalf - Screws' Auto-Turret
+        /// (<see cref="Combat.BallStyle.Turret"/>) or any ability throw whose origin is far from the hand.
+        /// </summary>
+        public static bool IsBodyThrow(DodgeballUltra.Player.DodgeballPlayer thrower, in DodgeballUltra.Events.BallThrownEvent e)
+        {
+            if (thrower == null) return false;
+            if (e.Ball != null && e.Ball.Style == Combat.BallStyle.Turret) return false;
+            if (!e.IsAbilityThrow) return true;
+
+            CharacterVisual visual = thrower.Visual;
+            Vector3 hand = visual != null && visual.RightHandSocket != null ? visual.RightHandSocket.position : thrower.ChestPosition;
+            return (e.Origin - hand).sqrMagnitude <= BodyThrowMaxHandDistance * BodyThrowMaxHandDistance;
+        }
+
         /// <summary>Planar (y = 0) normalised direction, or <paramref name="fallback"/> when degenerate.</summary>
         public static Vector3 Planar(Vector3 v, Vector3 fallback)
         {

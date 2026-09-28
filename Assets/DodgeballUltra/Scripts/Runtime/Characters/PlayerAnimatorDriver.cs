@@ -387,7 +387,8 @@ namespace DodgeballUltra.Characters
 
         private void OnBallThrown(BallThrownEvent e)
         {
-            if (Owner != null && e.Thrower == Owner) TriggerThrow();
+            // Shots a device fires on the owner's behalf (Screws' turret) must not swing the arm.
+            if (Owner != null && e.Thrower == Owner && HumanoidUtil.IsBodyThrow(Owner, in e)) TriggerThrow();
         }
 
         private void OnBallCaught(BallCaughtEvent e)
