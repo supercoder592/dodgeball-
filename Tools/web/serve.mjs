@@ -1,4 +1,6 @@
-// Minimal static file server for docs/ (the GitHub Pages site).  node Tools/web/serve.mjs [port] [--pages]
+// Minimal static file server for docs/ (the GitHub Pages site).  node Tools/web/serve.mjs [port] [--pages] [--root dir]
+// --root / startServer(port, { root }) / env DU_ROOT serve another directory instead of docs/, e.g. the production
+// site built by `Tools/web/deploy_pages.sh --dry-run <dir>` (smoke.mjs, audit.mjs and loadprobe.mjs honour DU_ROOT).
 // Default: every response is a full 200 with 'cache-control: no-cache' (dev: edits show up on reload).
 // startServer(port, { pages: true }) / --pages mimics GitHub Pages instead, so load measurements see the same wire
 // bytes and cache behaviour as players: gzip for text types, 'cache-control: max-age=600', ETag / Last-Modified with
@@ -9,7 +11,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs');
+const docsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs');
 const types = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.glb': 'model/gltf-binary', '.webp': 'image/webp',
@@ -21,10 +23,12 @@ const compressible = new Set(['.html', '.js', '.mjs', '.css', '.json', '.svg', '
 
 /**
  * @param {number} [port] 0 = any free port
- * @param {{ pages?: boolean }} [options] pages: GitHub Pages headers (gzip, max-age=600, ETag + 304)
+ * @param {{ pages?: boolean, root?: string }} [options] pages: GitHub Pages headers (gzip, max-age=600, ETag + 304);
+ *   root: directory to serve (default: env DU_ROOT, else docs/)
  * @returns {Promise<http.Server>}
  */
-export function startServer(port = 0, { pages = false } = {}) {
+export function startServer(port = 0, { pages = false, root = process.env.DU_ROOT || docsRoot } = {}) {
+  root = path.resolve(root);
   const gzCache = new Map(); // file -> { mtimeMs, body } (pages mode: compressed once, up front, like a CDN edge)
   if (pages) {
     const walk = (dir) => {
@@ -73,6 +77,7 @@ export function startServer(port = 0, { pages = false } = {}) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   const port = Number(args.find((a) => /^\d+$/.test(a)) || 8080);
-  const s = await startServer(port, { pages: args.includes('--pages') });
-  console.log(`Dodgeball Ultra web build: http://127.0.0.1:${s.address().port}/${args.includes('--pages') ? ' (GitHub Pages headers)' : ''}`);
+  const ri = args.indexOf('--root');
+  const s = await startServer(port, { pages: args.includes('--pages'), ...(ri >= 0 ? { root: args[ri + 1] } : {}) });
+  console.log(`Dodgeball Ultra web build: http://127.0.0.1:${s.address().port}/${args.includes('--pages') ? ' (GitHub Pages headers)' : ''}${ri >= 0 ? ` serving ${path.resolve(args[ri + 1])}` : ''}`);
 }

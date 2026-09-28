@@ -1,5 +1,6 @@
 // Headless smoke test of the web build (Chromium + SwiftShader WebGL).
 //   node Tools/web/smoke.mjs [--page dev/avatar-viewer.html] [--query "autoplay=1&spectate=1"] [--seconds 20] [--shots 4] [--tag name] [--keys]
+//        [--root dir] (serve another directory, e.g. the site from `deploy_pages.sh --dry-run dir`; env DU_ROOT works too)
 // Prints a JSON report (page errors, console errors/warnings, failed requests, game stats) and writes screenshots to
 // Tools/web/screenshots/<tag>-N.png. Exit code 1 when the page threw or logged errors.
 import { chromium } from 'playwright-core';
@@ -19,7 +20,7 @@ const tag = opt('tag', 'smoke');
 const width = Number(opt('width', '1280')), height = Number(opt('height', '720'));
 const exe = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
-const server = await startServer(0);
+const server = await startServer(0, opt('root') ? { root: opt('root') } : {});
 const pagePath = opt('page', 'index.html');
 const url = `http://127.0.0.1:${server.address().port}/${pagePath}?${query}`;
 const browser = await chromium.launch({

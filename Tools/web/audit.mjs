@@ -2,6 +2,7 @@
 // browser's full frame rate even with software GL) and reports what actually happened - throws, hits, catch attempts,
 // perfect catches, ability casts, matches finished - plus any page errors/warnings.
 //   node Tools/web/audit.mjs [seed=11] [seconds=150] [extra query, e.g. "difficulty=hard"]
+//   DU_ROOT=<dir> node Tools/web/audit.mjs ...  audits another directory (e.g. the site from deploy_pages.sh --dry-run)
 import { chromium } from 'playwright-core';
 import { startServer } from './serve.mjs';
 

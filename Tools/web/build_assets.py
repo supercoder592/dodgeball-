@@ -7,8 +7,16 @@ Builds the realistic-human assets for the Dodgeball Ultra WEB build (docs/assets
 
 Pipeline (Microsoft Rocketbox, MIT, pinned by Tools/rocketbox_manifest.json):
   download FBX + TGA  ->  FBX2glTF (skinned mesh / animation)  ->  gltf_post.mjs (strip placeholder textures,
-  keep rotation tracks + root translation so clips retarget onto every avatar)  ->  textures resized to 1024 px WebP
-  (colour, normal, ORM built from the specular map, hair opacity)  ->  docs/assets/manifest.json
+  keep rotation tracks + root translation so clips retarget onto every avatar, resample, meshopt compression +
+  quantization)  ->  WebP textures (colour / hair opacity 1024 px, normal 512 px, ORM from the specular map 256 px)
+  ->  docs/assets/manifest.json
+
+  python3 Tools/web/build_assets.py --textures-only   # re-encode textures + portraits from the download cache
+  node Tools/web/bake_crowd.mjs                       # afterwards: re-bake the crowd impostor atlas (assets/crowd/)
+
+Texture sizes are chosen for the game's camera distances (a hero is at most ~700 px tall on screen, the hero-select
+preview included): colour and alpha keep 1024 px, tangent-space normal detail is invisible above 512 px, and the
+roughness (ORM) maps are nearly flat. Re-encoding at 1024/1024/512 costs ~2x the bytes and ~2.5x the VRAM.
 
 Requires: python3 + Pillow, node + `npm install` in Tools/web.
 """
@@ -60,7 +68,9 @@ CLIPS = {
     "defeat": ("static", "gestic_shrug_01", False),
 }
 
-TEX_SIZE = 1024
+COLOR_SIZE = 1024   # colour + hair opacity (RGBA) maps
+NORMAL_SIZE = 512   # tangent-space normal maps
+ORM_SIZE = 256      # R = AO 1, G = roughness, B = metal 0
 
 
 def log(msg):
@@ -106,19 +116,19 @@ def save_webp(img, path, quality, lossless=False):
 
 
 def convert_color(src, dst):
-    im = Image.open(src).convert("RGB").resize((TEX_SIZE, TEX_SIZE), Image.LANCZOS)
+    im = Image.open(src).convert("RGB").resize((COLOR_SIZE, COLOR_SIZE), Image.LANCZOS)
     save_webp(im, dst, 88)
 
 
 def convert_normal(src, dst):
-    im = Image.open(src).convert("RGB").resize((TEX_SIZE, TEX_SIZE), Image.LANCZOS)
-    save_webp(im, dst, 95)
+    im = Image.open(src).convert("RGB").resize((NORMAL_SIZE, NORMAL_SIZE), Image.LANCZOS)
+    save_webp(im, dst, 92)
 
 
 def convert_orm(spec_src, dst, kind):
     """ORM texture for three.js: R = ambient occlusion (1), G = roughness, B = metalness (0).
     Rocketbox ships 3ds Max specular-level maps; brighter = shinier. Skin keeps a soft sheen range."""
-    spec = Image.open(spec_src).convert("L").resize((512, 512), Image.LANCZOS)
+    spec = Image.open(spec_src).convert("L").resize((ORM_SIZE, ORM_SIZE), Image.LANCZOS)
     lo, hi = (0.42, 0.78) if kind == "head" else (0.48, 0.95)
     lut = []
     for v in range(256):
@@ -132,7 +142,7 @@ def convert_orm(spec_src, dst, kind):
 
 
 def convert_opacity(src, dst):
-    im = Image.open(src).convert("RGBA").resize((TEX_SIZE, TEX_SIZE), Image.LANCZOS)
+    im = Image.open(src).convert("RGBA").resize((COLOR_SIZE, COLOR_SIZE), Image.LANCZOS)
     save_webp(im, dst, 90)
 
 
@@ -149,7 +159,7 @@ def make_portrait(src, dst):
     save_webp(im.crop(box).resize((384, 384), Image.LANCZOS), dst, 88)
 
 
-def build_hero(hero, avatar_name, gender, man):
+def build_hero(hero, avatar_name, gender, man, textures_only=False):
     a = man["avatars"][avatar_name]
     base = man["rawBaseUrl"] + a["path"] + "/"
     cache = os.path.join(CACHE, "avatars", avatar_name)
@@ -158,7 +168,8 @@ def build_hero(hero, avatar_name, gender, man):
         download(base + rel, os.path.join(cache, rel))
     out = os.path.join(OUT, "heroes", hero.lower())
     os.makedirs(out, exist_ok=True)
-    fbx_to_glb(os.path.join(cache, a["model"]), os.path.join(out, "model.glb"), "avatar")
+    if not textures_only:
+        fbx_to_glb(os.path.join(cache, a["model"]), os.path.join(out, "model.glb"), "avatar")
 
     # Texture names look like <id>_<part>_<color|normal|specular>[_<variant>].tga, e.g. sm002_body_color_acu.tga,
     # m111_tools_normal.tga. Group them per part; the FBX material for a part is named <id>_<part>.
@@ -217,9 +228,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--heroes", default="all", help="comma list or 'all'")
     ap.add_argument("--skip-anims", action="store_true")
+    ap.add_argument("--textures-only", action="store_true", help="only re-encode hero textures + portraits (no FBX2glTF)")
     args = ap.parse_args()
 
-    if not os.path.exists(FBX2GLTF):
+    if not args.textures_only and not os.path.exists(FBX2GLTF):
         sys.exit("FBX2glTF missing: run `npm install` in Tools/web first")
     man = json.load(open(MANIFEST, encoding="utf-8"))
     heroes = list(HEROES) if args.heroes == "all" else [h.strip() for h in args.heroes.split(",") if h.strip()]
@@ -231,8 +243,8 @@ def main():
     out_man["commit"] = man["commit"]
 
     with cf.ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(build_hero, h, HEROES[h][0], HEROES[h][1], man): h for h in heroes}
-        if not args.skip_anims:
+        futs = {ex.submit(build_hero, h, HEROES[h][0], HEROES[h][1], man, args.textures_only): h for h in heroes}
+        if not args.skip_anims and not args.textures_only:
             for g in ("m", "f"):
                 for key in CLIPS:
                     futs[ex.submit(build_clip, g, key, man)] = (g, key)

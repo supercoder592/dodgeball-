@@ -23,7 +23,11 @@ for (const f of ['GLTFLoader.js', 'RGBELoader.js', 'HDRLoader.js', 'EXRLoader.js
   const src = path.join(three, 'examples', 'jsm', 'loaders', f);
   if (fs.existsSync(src)) copy(src, path.join(out, 'three', 'examples', 'jsm', 'loaders', f));
 }
-copy(path.join(three, 'examples', 'jsm', 'libs', 'fflate.module.js'), path.join(out, 'three', 'examples', 'jsm', 'libs', 'fflate.module.js'));
+// fflate: FBX/EXR inflate. meshopt_decoder: EXT_meshopt_compression in the hero/animation GLBs (gltf_post.mjs);
+// the GLTFLoader gets it via setMeshoptDecoder(MeshoptDecoder) - import 'three/addons/libs/meshopt_decoder.module.js'.
+for (const f of ['fflate.module.js', 'meshopt_decoder.module.js']) {
+  copy(path.join(three, 'examples', 'jsm', 'libs', f), path.join(out, 'three', 'examples', 'jsm', 'libs', f));
+}
 copy(path.join(three, 'LICENSE'), path.join(out, 'three', 'LICENSE'));
 copy(path.join(nm, 'cannon-es', 'dist', 'cannon-es.js'), path.join(out, 'cannon-es', 'cannon-es.js'));
 copy(path.join(nm, 'cannon-es', 'LICENSE'), path.join(out, 'cannon-es', 'LICENSE'));

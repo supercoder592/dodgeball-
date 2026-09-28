@@ -2,11 +2,12 @@
 // touched and stays the unbundled development build).
 //   node Tools/web/build_site.mjs <siteDir> [--version <commit>] [--no-minify]
 // 1. bundle.mjs: js/main.js + three + cannon-es + workers -> <siteDir>/bundle/<hash>/ (one minified ES module).
-// 2. index.html: the import map and js/main.js are replaced by the bundle; preload hints are added for the bundle
-//    (modulepreload) and assets/manifest.json, the hero-select portraits are prefetched.
-// 3. sw.js: VERSION / HASHES / SHELL placeholders are filled in (see docs/sw.js). HASHES covers every file a page
+// 2. sw.js: VERSION / HASHES / SHELL placeholders are filled in (see docs/sw.js). HASHES covers every file a page
 //    may request except the network-first ones (html, sw.js, version.json), so the service worker serves them
 //    cache-first and a new deploy re-downloads only files whose content changed.
+// 3. index.html: the import map and js/main.js are replaced by the bundle; preload hints are added for the bundle
+//    (modulepreload) and assets/manifest.json, the hero-select portraits are prefetched; <html data-du-build> gets
+//    the sw.js VERSION (the service worker and the page's update check compare builds with it).
 // js/ and vendor/ stay in the site: the dev pages (dev/*.html) keep using them through their own import maps.
 import crypto from 'crypto';
 import fs from 'fs';
@@ -29,24 +30,11 @@ const bundleArgs = [path.join(here, 'bundle.mjs'), site, '--src', site, '--json'
 if (args.includes('--no-minify')) bundleArgs.push('--no-minify');
 const bundle = JSON.parse(execFileSync(process.execPath, bundleArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim().split('\n').pop());
 
-// 2. index.html ----------------------------------------------------------------------------------------------------
 const manifest = JSON.parse(fs.readFileSync(path.join(site, 'assets', 'manifest.json'), 'utf8'));
 const portraits = Object.values(manifest.heroes || {}).filter((h) => h.folder && h.portrait).map((h) => `assets/${h.folder}${h.portrait}`);
-const indexFile = path.join(site, 'index.html');
-let html = fs.readFileSync(indexFile, 'utf8');
-const before = html;
-html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\n?/, '');
-html = html.replace(/<script type="module" src="js\/main\.js"><\/script>/, `<script type="module" src="${bundle.main}"></script>`);
-if (html === before || html.includes('js/main.js') || html.includes('importmap')) throw new Error('index.html: import map / js/main.js script tag not found - update build_site.mjs');
-const hints = [
-  `<link rel="modulepreload" href="${bundle.main}" />`,
-  '<link rel="preload" href="assets/manifest.json" as="fetch" crossorigin="anonymous" />',
-  ...portraits.map((p) => `<link rel="prefetch" href="${p}" />`),
-].join('\n');
-html = html.replace(/(<link rel="stylesheet"[^>]*>)/, `${hints}\n$1`);
-fs.writeFileSync(indexFile, html);
 
-// 3. sw.js ---------------------------------------------------------------------------------------------------------
+// 2. sw.js ---------------------------------------------------------------------------------------------------------
+// (index.html is network-first and not hashed, so it can be written after VERSION is known.)
 const NETWORK_FIRST = /(^|\/)[^/]*\.html$|^sw\.js$|^version\.json$/;
 const SKIP = /^\.|\/\.|\.md$|\.map$|\.test\.js$/;
 const hashes = {};
@@ -72,6 +60,24 @@ sw = sw.replace("'__DU_VERSION__'", JSON.stringify(version))
   .replace('/*__DU_SHELL__*/ []', JSON.stringify(shell));
 if (sw === swBefore || sw.includes('__DU_')) throw new Error('sw.js placeholders not found - update build_site.mjs');
 fs.writeFileSync(swFile, sw);
+
+// 3. index.html ----------------------------------------------------------------------------------------------------
+const indexFile = path.join(site, 'index.html');
+let html = fs.readFileSync(indexFile, 'utf8');
+const before = html;
+html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\n?/, '');
+html = html.replace(/<script type="module" src="js\/main\.js"><\/script>/, `<script type="module" src="${bundle.main}"></script>`);
+if (html === before || html.includes('js/main.js') || html.includes('importmap')) throw new Error('index.html: import map / js/main.js script tag not found - update build_site.mjs');
+const hints = [
+  `<link rel="modulepreload" href="${bundle.main}" />`,
+  '<link rel="preload" href="assets/manifest.json" as="fetch" crossorigin="anonymous" />',
+  ...portraits.map((p) => `<link rel="prefetch" href="${p}" />`),
+].join('\n');
+html = html.replace(/(<link rel="stylesheet"[^>]*>)/, `${hints}\n$1`);
+// Build stamp (docs/sw.js header): a page never mixes files of two deploys, and is reloaded only for another build.
+html = html.replace(/<html(\s|>)/, `<html data-du-build="${version}"$1`);
+if (!html.includes(`data-du-build="${version}"`)) throw new Error('index.html: <html> tag not found - update build_site.mjs');
+fs.writeFileSync(indexFile, html);
 
 const kb = (n) => `${(n / 1024).toFixed(0)} KB`;
 console.log(`[site] ${bundle.modules} modules -> ${bundle.main} (${bundle.files.filter((f) => f.path.endsWith('.js')).map((f) => `${path.basename(f.path)} ${kb(f.bytes)}`).join(', ')}); ` +

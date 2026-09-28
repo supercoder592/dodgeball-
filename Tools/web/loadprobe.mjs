@@ -2,33 +2,41 @@
 // Load-time probe for the web build (headless Chromium + SwiftShader WebGL). Measures what a player waits for and
 // prints ONE JSON object, so before/after runs of an optimisation can be diffed:
 //
-//   menu    navigation -> window.__DU.ready (hero select shown), module graph evaluated, first rendered frame behind
-//           the menu, portraits loaded; bytes + requests before the menu by category (Resource Timing, wire bytes)
+//   menu    navigation -> window.__DU.ready (hero select shown) = menuMs; first rendered frame behind the menu
+//           (the DOM menu is composited with it, so this is when it is really on screen) = menuVisibleMs; module
+//           graph evaluated, first contentful paint (loading screen), portraits; bytes + requests before the menu by
+//           category (Resource Timing wire bytes), network-active time, long tasks, GL program/texture counts
 //   phases  boot phase durations from the 'du:boot:<phase>' User Timing marks in js/main.js (each mark ENDS a
-//           phase; any mark added later shows up automatically), with the bytes that finished during each phase
-//   play    (--play) PLAY on hero select -> players spawned (preRound) -> first rendered match frame -> countdown ->
-//           playing, frame hitches in between, bytes/requests loaded for the match
-//   cpu     (--cpu) sampled V8 CPU profile of the boot (and of the play window): self time bucketed by kind of work
-//           (shader compile, texture upload, procedural textures, glTF parse, GC, idle ...) and by owning subsystem
-//           (crowd bake, PMREM, first frames ...), plus the top functions
+//           phase; marks added later show up automatically), with the requests/bytes that finished in each phase
+//   play    (--play) Enter on hero select (same onConfirm as the PLAY button) -> players spawned (preRound) -> first
+//           rendered match frame -> all match assets downloaded -> settled (2 frames later: late texture uploads);
+//           frame hitches, bytes loaded for the match. --play-until-playing also waits for the 'playing' phase
+//   cpu     (--cpu) sampled V8 CPU profile of the boot and of the play window: self time by kind of work
+//           (shader-compile, gpu-sync-wait, gpu-upload = texture decode+upload, procedural-textures, asset-parse,
+//           gc, idle ...) and by owning subsystem (crowd bake, PMREM, renderer init, render frames ...), top functions
 //   spans   (--spans) wraps a few named methods (crowd bake, arena textures, ...) with marks by rewriting those module
 //           responses on the fly (CDP Fetch) - no product change; see SPANS below
-//   trace   (--trace file.json) Chrome trace of the boot (open in DevTools > Performance) + main-thread / GPU-process
-//           busy time by event (the GPU process is where SwiftShader compiles shaders and rasterises)
+//   trace   (--trace file.json) Chrome trace of the first run's boot (open in DevTools > Performance) + busy time by
+//           event on the renderer main thread and the GPU process (where SwiftShader compiles and rasterises)
 //
 // Profiles: desktop (1280x720, no throttling, auto quality -> 'high') and --mobile (Pixel 7 landscape: phone UA,
 // touch, DPR 2.625 -> auto quality 'low'; CDP network 20 Mbps down / 5 Mbps up / 60 ms latency, CPU throttling 4x).
 // The site is served GitHub-Pages style (serve.mjs { pages: true }: gzip for text, max-age=600, ETag) so byte counts
 // are wire bytes. Each run launches a fresh browser (cold HTTP cache AND cold GPU program cache).
-// Software GL inflates absolute times (shader compiles, draws) - compare runs made with identical flags only.
+// Software GL inflates everything GPU-side (shader compiles, PMREM, draws; the main thread blocks on it in
+// shader-compile / gpu-sync-wait) - compare runs made with identical flags only, and read network/JS numbers as the
+// part that transfers to a real phone.
 //
 //   node Tools/web/loadprobe.mjs [--mobile] [--play] [--cpu] [--spans] [--runs 3] [--query "quality=low"]
 //        [--hero Rayne] [--repeat] [--trace boot-trace.json] [--out result.json] [--timeout 300] [--dev-server]
+//   e.g. before/after an optimisation:  node Tools/web/loadprobe.mjs --mobile --play --runs 3 --out before.json
 //
 //   --query      extra URL query (default "seed=7"; add quality=low|medium|high to pin the quality)
 //   --runs N     repeat the whole measurement N times; `median` summarises the key numbers
+//   --hero Id    pick that hero card before confirming (default: first card / saved pick)
 //   --repeat     after the cold load, reload in the same context (warm HTTP cache) and report that load too
 //   --dev-server serve with serve.mjs dev headers (no-cache, no gzip) instead of GitHub Pages headers
+//   --timeout S  per-wait timeout in seconds (default 300)
 // Exit code 1 when a run failed (timeout, page errors, failed requests).
 // ---------------------------------------------------------------------------------------------------------------
 import { chromium, devices } from 'playwright-core';
@@ -53,6 +61,7 @@ const OPTS = {
   out: opt('out', null),
   timeoutMs: Math.max(10, Number(opt('timeout', '300')) || 300) * 1000,
   devServer: flag('dev-server'),
+  playUntilPlaying: flag('play-until-playing'),
   exe: process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
 };
 
@@ -74,6 +83,7 @@ const PROFILES = {
  * Methods wrapped with 'du:span:<name>:start|end' marks when --spans is given. The wrapper is appended to the module
  * source (the class binding is in module scope), so it survives refactors as long as the method exists; a missing
  * class/method is skipped silently. Several calls of one method aggregate (count, first start, last end, summed ms).
+ * The rewritten modules are served uncompressed (a few extra KB) - leave --spans off for byte comparisons.
  */
 const SPANS = [
   { file: 'js/render/renderer.js', target: 'Renderer.prototype', method: '_buildComposer', name: 'renderer.composer' },
@@ -88,7 +98,7 @@ const SPANS = [
 const CATEGORIES = [
   ['html', (p) => p === '' || p.endsWith('.html')],
   ['css', (p) => p.endsWith('.css')],
-  ['js', (p) => p.startsWith('js/')],
+  ['js', (p) => p.startsWith('js/') || p.startsWith('bundle/')], // bundle/: production build (build_site.mjs)
   ['vendor-three', (p) => p.startsWith('vendor/three/build/')],
   ['vendor-addons', (p) => p.startsWith('vendor/three/examples/')],
   ['vendor-other', (p) => p.startsWith('vendor/')],
@@ -107,6 +117,8 @@ const categoryOf = (p) => CATEGORIES.find(([, test]) => test(p))[0];
 /** WebGL-side work as seen from the main thread (three.js wrapper names; the native GL call is attributed to them). */
 const SHADER_FNS = new Set(['onFirstUse', 'getProgramInfoLog', 'getShaderInfoLog', 'compileShader', 'linkProgram', 'getProgramParameter', 'getShaderParameter', 'WebGLShader', 'WebGLProgram']);
 const UPLOAD_FNS = new Set(['texImage2D', 'texSubImage2D', 'texImage3D', 'texSubImage3D', 'texStorage2D', 'texStorage3D', 'compressedTexImage2D', 'compressedTexSubImage2D', 'generateMipmap', 'uploadTexture', 'bufferData', 'bufferSubData', 'createBuffer']);
+/** Synchronous GL queries: the main thread waits until the GPU process has drained all queued work (e.g. PMREM draws). */
+const SYNC_FNS = new Set(['getMaxAnisotropy', 'getMaxPrecision', 'getParameter', 'getExtension', 'getSupportedExtensions', 'getContextAttributes', 'getError', 'readPixels', 'readRenderTargetPixels', 'finish', 'clientWaitSync', 'WebGLRenderer.setSize', 'setDrawingBufferSize']);
 
 /** Kind of work a sample's leaf frame does. */
 function bucketOf(cf, url) {
@@ -116,7 +128,9 @@ function bucketOf(cf, url) {
   if (fn === '(program)') return 'browser-native';
   if (fn === '(root)') return 'other';
   if (SHADER_FNS.has(fn)) return 'shader-compile';
-  if (UPLOAD_FNS.has(fn) && url.startsWith('vendor/three/')) return 'gpu-upload';
+  if (UPLOAD_FNS.has(fn)) return 'gpu-upload';
+  if (SYNC_FNS.has(fn) && (!url || url.startsWith('vendor/three/'))) return 'gpu-sync-wait';
+  if (!url && /^(getImageData|putImageData|drawImage|createImageData|fillRect|fill|stroke|arc|fillText|createPattern|createLinearGradient|createRadialGradient)$/.test(fn)) return 'canvas-2d';
   if (!url) return 'browser-api';
   if (/^js\/(world|combat|vfx)\/[A-Za-z]*[tT]extures\.js$/.test(url)) return 'procedural-textures';
   if (url.includes('/loaders/')) return 'asset-parse';
@@ -136,6 +150,7 @@ const OWNERS = [
   ['asset parse (glTF/images)', (cf, url) => url.includes('/loaders/')],
   ['arena build', (cf, url) => url === 'js/world/arena.js' || url === 'js/world/scoreboard.js'],
   ['avatars', (cf, url) => url.startsWith('js/characters/')],
+  ['renderer init (context, composer)', (cf, url) => cf.functionName === 'Renderer' && url === 'js/render/renderer.js'],
   ['render frames', (cf, url) => (cf.functionName === 'tick' && url === 'js/game.js') || url === 'js/render/renderer.js'],
   ['hero select UI', (cf, url) => url.startsWith('js/ui/')],
   ['audio', (cf, url) => url.startsWith('js/audio/')],
@@ -246,7 +261,23 @@ function summarizeTrace(file) {
 /** Installed before any page script: bigger Resource Timing buffer, long-task log, error capture. */
 function initScript() {
   try { performance.setResourceTimingBufferSize(10000); } catch (e) { /* older engines */ }
-  const P = (window.__probe = { longTasks: [] });
+  const P = (window.__probe = { longTasks: [], readyAt: null });
+  // Exact time of `window.__DU.ready = true`, for builds without the du:boot marks (e.g. when comparing old commits).
+  let du;
+  Object.defineProperty(window, '__DU', {
+    configurable: true,
+    get() { return du; },
+    set(v) {
+      du = v;
+      if (!v || typeof v !== 'object') return;
+      let ready = v.ready;
+      Object.defineProperty(v, 'ready', {
+        configurable: true, enumerable: true,
+        get() { return ready; },
+        set(x) { if (x === true && P.readyAt == null) P.readyAt = performance.now(); ready = x; },
+      });
+    },
+  });
   try {
     new PerformanceObserver((list) => { for (const e of list.getEntries()) P.longTasks.push([e.startTime, e.duration]); })
       .observe({ type: 'longtask', buffered: true });
@@ -266,9 +297,11 @@ function snapshot() {
       url: e.name, start: e.startTime, end: e.responseEnd, transfer: e.transferSize, decoded: e.decodedBodySize, type: e.initiatorType,
     })),
     longTasks: (window.__probe && window.__probe.longTasks) || [],
+    readyAt: window.__probe ? window.__probe.readyAt : null,
     heapMB: performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null,
     gl: r3 ? {
       programs: r3.info.programs ? r3.info.programs.length : null,
+      programTypes: r3.info.programs ? r3.info.programs.reduce((o, p) => { o[p.name] = (o[p.name] || 0) + 1; return o; }, {}) : null,
       textures: r3.info.memory.textures, geometries: r3.info.memory.geometries,
       canvas: [r3.domElement.width, r3.domElement.height],
     } : null,
@@ -381,24 +414,32 @@ async function waitForMenu(page, timeout) {
 /** Summarises one load (cold or repeat) from a page snapshot. */
 function summarizeLoad(snap, origin, fallbackFrame) {
   const mark = (id) => { const m = snap.marks.find(([n]) => n === 'du:boot:' + id); return m ? m[1] : null; };
-  const ready = mark('ready');
+  const ready = mark('ready') ?? snap.readyAt;
   const readyAt = ready != null ? ready : snap.now;
   const all = snap.resources.slice();
   if (snap.nav) all.unshift({ url: snap.nav.url, start: 0, end: snap.nav.end, transfer: snap.nav.transfer, decoded: snap.nav.decoded, type: 'navigation' });
   const beforeMenu = all.filter((r) => r.end <= readyAt);
   const portraits = all.filter((r) => /\/portrait\.[a-z]+(\?|$)/.test(r.url));
+  // Wall time with at least one request in flight before the menu (union of fetch intervals).
+  let netMs = 0, curS = -1, curE = -1;
+  for (const r of beforeMenu.slice().sort((a, b) => a.start - b.start)) {
+    if (r.start > curE) { if (curE > curS) netMs += curE - curS; curS = r.start; curE = r.end; } else curE = Math.max(curE, r.end);
+  }
+  if (curE > curS) netMs += curE - curS;
   const longBefore = snap.longTasks.filter(([s]) => s <= (mark('firstFrame') || readyAt));
   const largest = beforeMenu.slice().sort((a, b) => b.transfer - a.transfer).slice(0, 10)
     .map((r) => `${kb(r.transfer)} KB  ${r.url.slice(origin.length + 1)}`);
   return {
     quality: snap.quality,
     menuMs: r0(ready),                                         // window.__DU.ready (hero select DOM shown)
+    readyHookMs: r0(snap.readyAt),                             // same, seen by the probe's setter (works without marks)
     menuVisibleMs: r0(mark('firstFrame') ?? fallbackFrame),    // first rendered frame (menu composited over it)
     portraitsMs: portraits.length ? r0(Math.max(...portraits.map((r) => r.end))) : null,
     modulesMs: r0(mark('modules')),                            // module graph fetched + evaluated, boot() starts
     firstPaintMs: r0(snap.paints['first-paint']),
     firstContentfulPaintMs: r0(snap.paints['first-contentful-paint']),
     domContentLoadedMs: snap.nav ? r0(snap.nav.dcl) : null,
+    networkActiveMs: r0(netMs),
     beforeMenu: groupBytes(beforeMenu, origin),
     afterMenuUntilNow: groupBytes(all.filter((r) => r.end > readyAt), origin),
     longTasks: { count: longBefore.length, totalMs: r0(longBefore.reduce((a, [, d]) => a + d, 0)), maxMs: r0(longBefore.reduce((a, [, d]) => Math.max(a, d), 0)) },
@@ -426,27 +467,39 @@ async function measurePlay(page, origin, timeout) {
     };
     const idx = hero ? (g.roster || []).findIndex((h) => h.id.toLowerCase() === String(hero).toLowerCase()) : -1;
     if (idx >= 0) { const card = document.querySelector(`.hs-card[data-i="${idx}"]`); if (card) card.click(); }
+    // t0 = the confirming key press, taken before the Input system's (bubble) listener runs the hero select confirm.
+    window.addEventListener('keydown', (e) => { if (e.code === 'Enter' && !P.play.t0) P.play.t0 = performance.now(); }, true);
     return idx;
   }, OPTS.hero);
-  const started = await page.evaluate(() => {
-    const btn = document.querySelector('.hs-play');
-    if (!btn) return false;
-    window.__probe.play.t0 = performance.now();
-    btn.click();
-    return true;
-  });
-  if (!started) return { error: 'no .hs-play button (autoplay query or changed hero select)' };
-  const reached = await page.waitForFunction(() => window.__probe.play.phases.some(([p]) => p === 'playing'), null, { timeout, polling: 100 })
-    .then(() => true).catch(() => false);
-  await page.waitForTimeout(300);
+  // Confirm with Enter (Input -> HeroSelect.onMenuAction('confirm') -> the same onConfirm as the PLAY button). The key
+  // path is independent of pointer/touch hit-testing, so the probe keeps working whatever the button layout does.
+  const hasMenu = await page.evaluate(() => !!document.querySelector('.hs.open'));
+  if (!hasMenu) return { error: 'hero select not open (autoplay query or changed hero select)' };
+  await page.keyboard.press('Enter');
+  // Settled = players spawned, the first match frame rendered, every asset request of the match finished
+  // (game.assets counters) and two more frames drawn after that (late texture uploads). --play-until-playing also
+  // waits for the 'playing' phase (pre-round + countdown are fixed design time, stretched by slow software frames).
+  const settled = await page.waitForFunction((untilPlaying) => {
+    const P = window.__probe.play;
+    const a = window.__DU.game.assets;
+    const pre = P.phases.find(([p]) => p === 'preRound');
+    if (!pre) return false;
+    const idle = !a || typeof a._total !== 'number' || a._loaded >= a._total;
+    if (idle && !P.assetsIdleAt) P.assetsIdleAt = performance.now();
+    if (!idle) P.assetsIdleAt = 0;
+    const after = P.assetsIdleAt ? P.frames.filter(([s]) => s >= P.assetsIdleAt && s >= pre[1]) : [];
+    if (after.length >= 2 && !P.settledAt) P.settledAt = after[1][0] + after[1][1];
+    return !!P.settledAt && (!untilPlaying || P.phases.some(([p]) => p === 'playing'));
+  }, OPTS.playUntilPlaying, { timeout: Math.min(timeout, 240000), polling: 50 }).then(() => true).catch(() => false);
   const d = await page.evaluate(() => {
     const P = window.__probe.play;
     const g = window.__DU.game;
     return {
-      P, now: performance.now(), setup: g.match && g.match.setup ? { home: g.match.setup.homeHeroes, away: g.match.setup.awayHeroes, local: g.match.setup.localHero } : null,
+      P, now: performance.now(), phase: g.match ? g.match.phase : null, setup: g.match && g.match.setup ? { home: g.match.setup.homeHeroes, away: g.match.setup.awayHeroes, local: g.match.setup.localHero } : null,
       resources: performance.getEntriesByType('resource').filter((e) => e.startTime >= P.t0)
         .map((e) => ({ url: e.name, start: e.startTime, end: e.responseEnd, transfer: e.transferSize, decoded: e.decodedBodySize })),
       programs: g.renderer && g.renderer.three.info.programs ? g.renderer.three.info.programs.length : null,
+      textures: g.renderer ? g.renderer.three.info.memory.textures : null,
       heapMB: performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null,
     };
   });
@@ -454,24 +507,31 @@ async function measurePlay(page, origin, timeout) {
   const at = (phase) => { const e = P.phases.find(([p]) => p === phase); return e ? e[1] : null; };
   const pre = at('preRound'), cd = at('countdown'), playing = at('playing');
   const firstFrame = pre != null ? P.frames.find(([s]) => s >= pre) : null;
-  const inWindow = P.frames.filter(([s]) => s >= P.t0 && (playing == null || s <= playing));
-  const rel = (t) => (t == null ? null : r0(t - P.t0));
+  const end = P.settledAt || d.now;
+  const inWindow = P.frames.filter(([s]) => s >= P.t0 && s <= end);
+  const rel = (t) => (t == null || !t ? null : r0(t - P.t0));
   return {
+    trigger: 'Enter on hero select',
     heroIndex,
     setup: d.setup,
-    reachedPlaying: reached,
-    clickToPreRoundMs: rel(pre),                                           // players created + avatars loaded
+    settled,
+    phaseNow: d.phase,
+    clickToPreRoundMs: rel(pre),                                           // players created (models + clips ready)
     clickToFirstFrameMs: firstFrame ? r0(firstFrame[0] + firstFrame[1] - P.t0) : null, // first rendered match frame
     firstFrameMs: firstFrame ? r0(firstFrame[1]) : null,                   // its duration (shader compiles, uploads)
+    clickToAssetsIdleMs: rel(P.assetsIdleAt),                              // every avatar texture downloaded
+    clickToSettledMs: rel(P.settledAt),                                    // ... and uploaded (2 frames later)
     clickToCountdownMs: rel(cd),
     clickToPlayingMs: rel(playing),
-    frames: {
+    frames: {                                                              // click -> settled
       count: inWindow.length,
       maxMs: r0(inWindow.reduce((a, f) => Math.max(a, f[1]), 0)),
       over100ms: inWindow.filter((f) => f[1] > 100).length,
+      hitchMs: r0(inWindow.reduce((a, f) => a + Math.max(0, f[1] - 50), 0)), // frame time beyond 50 ms, summed
     },
-    loaded: groupBytes(d.resources.filter((r) => playing == null || r.end <= playing), origin),
+    loaded: groupBytes(d.resources.filter((r) => r.end <= end), origin),
     programsAfter: d.programs,
+    texturesAfter: d.textures,
     heapMB: d.heapMB,
   };
 }
@@ -522,6 +582,7 @@ async function runOnce(runIndex, server) {
     if (OPTS.play) {
       if (OPTS.cpu) await cdp.send('Profiler.start');
       result.play = await measurePlay(page, origin, OPTS.timeoutMs);
+      if (!result.play.settled) result.errors.push('play: match did not settle (' + (result.play.error || 'timeout') + ')');
       if (OPTS.cpu) result.cpuPlay = summarizeProfile((await cdp.send('Profiler.stop')).profile, origin);
     }
     if (OPTS.repeat) {
@@ -560,14 +621,16 @@ function medianOf(runs) {
     menuMs: pick((r) => r.menuMs), menuVisibleMs: pick((r) => r.menuVisibleMs), portraitsMs: pick((r) => r.portraitsMs),
     modulesMs: pick((r) => r.modulesMs), firstContentfulPaintMs: pick((r) => r.firstContentfulPaintMs),
     beforeMenuMB: pick((r) => r.beforeMenu.MB), beforeMenuRequests: pick((r) => r.beforeMenu.requests),
+    networkActiveMs: pick((r) => r.networkActiveMs),
     longTaskMs: pick((r) => r.longTasks.totalMs), maxLongTaskMs: pick((r) => r.longTasks.maxMs),
     phasesMs: Object.fromEntries(phaseIds.map((id) => [id, pick((r) => r.phases[id].ms)])),
   };
   if (ok.some((r) => r.play)) {
     out.play = {
       clickToPreRoundMs: pick((r) => r.play.clickToPreRoundMs), clickToFirstFrameMs: pick((r) => r.play.clickToFirstFrameMs),
-      firstFrameMs: pick((r) => r.play.firstFrameMs), clickToPlayingMs: pick((r) => r.play.clickToPlayingMs),
-      loadedMB: pick((r) => r.play.loaded.MB), maxFrameMs: pick((r) => r.play.frames.maxMs),
+      firstFrameMs: pick((r) => r.play.firstFrameMs), clickToSettledMs: pick((r) => r.play.clickToSettledMs),
+      clickToPlayingMs: pick((r) => r.play.clickToPlayingMs), loadedMB: pick((r) => r.play.loaded.MB),
+      maxFrameMs: pick((r) => r.play.frames.maxMs), hitchMs: pick((r) => r.play.frames.hitchMs),
     };
   }
   if (ok.some((r) => r.repeat)) out.repeatMenuMs = pick((r) => r.repeat.menuMs);
