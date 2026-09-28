@@ -118,3 +118,8 @@ CC_TAG=me Tools/CompileCheck/run.sh Runtime Editor
 Compiles against Unity 2021.3 reference assemblies (NuGet), a reference build of uGUI, and API-exact stubs for the
 Input System / HDRP (`Tools/CompileCheck/Stubs`, copied from the package sources). Use a unique `CC_TAG` when several
 builds run concurrently.
+
+The module reference assemblies are player-flavoured, so editor-only engine members (`Light.lightmapBakeType`,
+`LightingSettings` bake settings, `LightProbeGroup.probePositions`) are fenced with `#if !DU_CC_PLAYER_REFS` (a symbol
+only the harness defines) and mirrored in `Tools/CompileCheck/EditorOnlyApis`, which is checked against the SDK's
+editor `UnityEngine.dll`.
