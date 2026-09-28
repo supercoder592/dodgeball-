@@ -196,7 +196,8 @@ export class MeteorPayload {
   /** Live flight ended for any reason. If nothing resolved it (absorbed by an obstacle), burst where it stopped. */
   onEnded(ball) {
     if (!this.detonated && !this.smothered && this.s.detonateOnObstacles && ball && ball.position &&
-        ball.state !== 'held' && ball.state !== 'despawned' && ball.state !== 'stasis') {
+        ball.state !== 'held' && ball.state !== 'despawned' && ball.state !== 'stasis' &&
+        !(game.court && game.court.isOutOfArena(ball.position))) {
       this.detonate(ball.position, ball);
     }
     this.finish();

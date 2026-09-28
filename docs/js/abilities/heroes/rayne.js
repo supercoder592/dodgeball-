@@ -90,6 +90,7 @@ export class RayneOvercharge extends AbilityBase {
     this._registeredOn = null;
     this._raisedProfile = null;
     this._originalMaxCharge = 0;
+    this._raised = false;
     this._glow = null;
     this._fullCuePlayed = false;
     // Stable modifier object (identity is used by removeThrowModifier).
@@ -190,15 +191,16 @@ export class RayneOvercharge extends AbilityBase {
       this._restoreProfile();
       this._raisedProfile = profile;
       this._originalMaxCharge = profile.maxChargeTime;
-      if (!(profile.maxChargeTime >= this.params.fullTime)) profile.maxChargeTime = this.params.fullTime;
+      this._raised = !(profile.maxChargeTime >= this.params.fullTime);
+      if (this._raised) profile.maxChargeTime = this.params.fullTime;
     }
   }
 
+  /** Undo the maxChargeTime raise (only if this passive raised it). */
   _restoreProfile() {
-    if (this._raisedProfile && this._raisedProfile.maxChargeTime !== this._originalMaxCharge && this._originalMaxCharge > 0) {
-      this._raisedProfile.maxChargeTime = this._originalMaxCharge;
-    }
+    if (this._raisedProfile && this._raised) this._raisedProfile.maxChargeTime = this._originalMaxCharge;
     this._raisedProfile = null;
+    this._raised = false;
   }
 
   _stopGlow() {
@@ -334,15 +336,17 @@ export class RayneSupersonicMeteor extends AbilityBase {
     this._trackedFor += dt;
     const p = this._payload, b = this._ball;
     if (p && b && !p.resolved) {
-      const ours = b.payload === p;
-      if (ours && b.state === 'live' && p.detonated) {
+      const carries = b.payload === p;
+      // Combat may clear the payload when the flight ends; a different payload means the pooled ball was reused.
+      const ours = carries || b.payload == null;
+      if (carries && b.state === 'live' && p.detonated) {
         // Burst against a wall but still flying: the spent meteor drops instead of ricocheting on as a live ball.
         // Done here (frame update) rather than inside the payload callbacks, which run in the middle of the ball's sweep.
         b.makeFree?.(_vel.copy(b.velocity).multiplyScalar(this.params.spentBallSpeedFraction), true);
       } else if (ours && b.state !== 'live' && b.state !== 'stasis') {
         // The flight ended without a callback we saw (e.g. an obstacle absorbed it): let the payload decide.
         p.onEnded(b);
-      } else if (!ours && b.state === 'live') {
+      } else if (!ours) {
         // The pooled ability ball was recycled into another projectile: our flight is long over.
         p.finish();
       }
@@ -476,10 +480,11 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
     this._trackedFor += dt;
     const p = this._payload, b = this._ball;
     if (p && b && !p.resolved) {
-      const ours = b.payload === p;
+      const carries = b.payload === p;
+      const ours = carries || b.payload == null; // see RayneSupersonicMeteor.onTick
       // The beam grounds out on the first wall/floor it strikes: it never ricochets back through players.
-      if (ours && p.hasHitSurface && b.state === 'live') b.makeFree?.(_vel.copy(b.velocity).multiplyScalar(0.1), true);
-      else if ((ours && b.state !== 'live' && b.state !== 'stasis') || (!ours && b.state === 'live')) p.finish();
+      if (carries && p.hasHitSurface && b.state === 'live') b.makeFree?.(_vel.copy(b.velocity).multiplyScalar(0.1), true);
+      else if ((ours && b.state !== 'live' && b.state !== 'stasis') || !ours) p.finish();
     }
     if (!p || p.resolved || this._trackedFor >= this.params.resolveTimeout) this.endAbility();
   }

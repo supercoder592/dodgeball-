@@ -7,6 +7,7 @@
 import { game } from '../game.js';
 import { TEAM, ZONE, KMH_TO_MS, STANDARD_HIT_DAMAGE } from '../core/constants.js';
 import { RallyMath } from '../core/rules.js';
+import { Court } from '../world/court.js';
 import { heroMovement, heroCombat, BASE_MOVEMENT, BASE_COMBAT } from '../abilities/roster.js';
 import { clamp01, lerp, planarAngleDeg, planarDistance } from './aiMath.js';
 
@@ -143,13 +144,13 @@ export function anyTeammatePending(self) {
 // ------------------------------------------------------------------ court
 
 const _conf = { court: null, bounds: [null, null, null, null] };
+let _fallbackCourt = null;
 /**
  * Cached movement confinement of (team, zone) - Court.confinement() allocates, so the four combinations are built
- * once per court instance. Returns null before the court exists.
+ * once per court instance. Before the arena exists a regulation Court stands in.
  */
 export function confinementOf(team, zone) {
-  const court = game.court;
-  if (!court) return null;
+  const court = game.court || (_fallbackCourt || (_fallbackCourt = new Court()));
   if (_conf.court !== court) {
     _conf.court = court;
     _conf.bounds[0] = court.confinement(TEAM.HOME, ZONE.INFIELD);

@@ -90,14 +90,19 @@ export function findMostThreateningBall(player, horizon) {
   if (!player || !balls) return out;
 
   _incoming.length = 0;
-  if (typeof balls.incomingLive === 'function') balls.incomingLive(player, _incoming);
-  else if (Array.isArray(balls.active)) for (const b of balls.active) if (b && b.state === 'live') _incoming.push(b);
+  let list = _incoming;
+  if (typeof balls.incomingLive === 'function') {
+    const r = balls.incomingLive(player, _incoming);
+    if (Array.isArray(r) && r !== _incoming && _incoming.length === 0) list = r; // tolerate a returned array
+  } else if (Array.isArray(balls.active)) {
+    for (const b of balls.active) if (b && b.state === 'live') _incoming.push(b);
+  }
 
   _chest.copy(player.position);
   _chest.y += CHEST_HEIGHT;
   let nearMiss = null, nearMissTime = Infinity, nearMissDist = Infinity;
-  for (let i = 0; i < _incoming.length; i++) {
-    const ball = _incoming[i];
+  for (let i = 0; i < list.length; i++) {
+    const ball = list[i];
     if (!isHostileLiveBall(ball, player)) continue;
     const t = predictImpactTime(ball, player, horizon);
     if (t !== null) {
@@ -151,6 +156,8 @@ export const fx = {
   sfx(id, position, volume = 1, pitch = 1) { try { game.audio?.play?.(id, position, volume, pitch); } catch (e) { warnOnce(`audio.play(${id})`, e); } },
   sfx2D(id, volume = 1, pitch = 1) { try { game.audio?.play2D?.(id, volume, pitch); } catch (e) { warnOnce(`audio.play2D(${id})`, e); } },
   pulse(type, intensity, duration) { try { game.renderer?.pulse?.(type, intensity, duration); } catch (e) { warnOnce(`renderer.pulse(${type})`, e); } },
+  /** Persistent (smoothed) screen look, 0 = off. */
+  sustain(type, amount) { try { game.renderer?.setSustained?.(type, amount); } catch (e) { warnOnce(`renderer.setSustained(${type})`, e); } },
   flash(player, color, duration) { try { player?.avatar?.flash?.(color, duration); } catch (e) { warnOnce('avatar.flash', e); } },
   afterimage(player, lifetime, color) { try { player?.avatar?.spawnAfterimage?.(lifetime, color); } catch (e) { warnOnce('avatar.spawnAfterimage', e); } },
 };

@@ -47,7 +47,7 @@ export class TouchControls {
     /** pointerId -> { def, x, y } for pointers holding a button */
     this._btnPointers = new Map();
     this._btnCount = {};
-    this._abilityCache = { skill: '', ultimate: '' };
+    this._abilityCache = { skill: null, ultimate: null };
     this._off = [];
   }
 
@@ -126,15 +126,14 @@ export class TouchControls {
   setAbilityState(id, cd, seconds, ready, active, charge = 1) {
     const el = this.buttons[id];
     if (!el) return;
-    const key = `${Math.round(cd * 100)}|${seconds}|${ready ? 1 : 0}|${active ? 1 : 0}|${Math.round(charge * 100)}`;
-    if (this._abilityCache[id] === key) return;
-    this._abilityCache[id] = key;
-    el.style.setProperty('--cd', cd.toFixed(3));
-    el.style.setProperty('--charge', charge.toFixed(3));
-    el.classList.toggle('tc-ready', !!ready);
-    el.classList.toggle('tc-active', !!active);
-    const cdEl = el.querySelector('.tc-cd');
-    if (cdEl) cdEl.textContent = seconds;
+    let c = this._abilityCache[id];
+    if (!c || typeof c !== 'object') c = this._abilityCache[id] = { cd: -1, sec: null, ready: null, active: null, charge: -1, cdEl: el.querySelector('.tc-cd') };
+    const qcd = Math.round(cd * 200) / 200, qch = Math.round(charge * 200) / 200;
+    if (c.cd !== qcd) { c.cd = qcd; el.style.setProperty('--cd', String(qcd)); }
+    if (c.charge !== qch) { c.charge = qch; el.style.setProperty('--charge', String(qch)); }
+    if (c.ready !== !!ready) { c.ready = !!ready; el.classList.toggle('tc-ready', c.ready); }
+    if (c.active !== !!active) { c.active = !!active; el.classList.toggle('tc-active', c.active); }
+    if (c.sec !== seconds && c.cdEl) { c.sec = seconds; c.cdEl.textContent = seconds; }
   }
 
   dispose() {

@@ -29,16 +29,18 @@ export function cssColor(c, fallback = '#ffffff') {
  * Charge bar model. The normal charge fills `base` 0..1 (combat.charge). Heroes with an overcharge passive (Rayne)
  * keep charging up to `overFullTime` seconds: `over` 0..1 fills after the normal charge is full and `bonus` is the
  * current fraction of the passive's full bonus (it scales with the whole charge time, per spec "over 2 s").
+ * Pass `out` to reuse an object every frame.
  */
-export function chargeModel(charge, chargeSeconds, fullChargeTime, overFullTime = 0) {
+export function chargeModel(charge, chargeSeconds, fullChargeTime, overFullTime = 0, out = { base: 0, over: 0, bonus: 0 }) {
   const base = Math.min(1, Math.max(0, Number.isFinite(charge) ? charge : 0));
-  if (!(overFullTime > 0)) return { base, over: 0, bonus: 0 };
+  out.base = base; out.over = 0; out.bonus = 0;
+  if (!(overFullTime > 0)) return out;
   const cs = Math.max(0, chargeSeconds || 0);
   const start = Math.min(fullChargeTime, overFullTime);
   const span = Math.max(1e-3, overFullTime - start);
-  const over = base >= 0.999 ? Math.min(1, Math.max(0, (cs - start) / span)) : 0;
-  const bonus = Math.min(1, cs / overFullTime);
-  return { base, over, bonus };
+  out.over = base >= 0.999 ? Math.min(1, Math.max(0, (cs - start) / span)) : 0;
+  out.bonus = Math.min(1, cs / overFullTime);
+  return out;
 }
 
 /** Status chips: label, 中文, tone ('bad' | 'good' | 'info'). */

@@ -405,9 +405,14 @@ export class Motor {
     vel.x = _planar.x;
     vel.z = _planar.z;
 
-    // ---- gravity
+    // ---- gravity (trapezoidal: exact for constant acceleration, so the jump apex is exactly jumpHeight)
+    let vyAvg = 0;
     if (grounded) vel.y = 0;
-    else vel.y = Math.max(vel.y - this.gravity * dt, -t.maxFallSpeed);
+    else {
+      const vy0 = vel.y;
+      vel.y = Math.max(vy0 - this.gravity * dt, -t.maxFallSpeed);
+      vyAvg = 0.5 * (vy0 + vel.y);
+    }
 
     // ---- predictive confinement (never step past a line this step)
     if (this._hasBounds) {
@@ -417,7 +422,9 @@ export class Motor {
     }
 
     // ---- integrate + resolve
-    pos.addScaledVector(vel, dt);
+    pos.x += vel.x * dt;
+    pos.z += vel.z * dt;
+    pos.y += vyAvg * dt;
     this._collideColliders(pos, vel);
     this._separatePlayers(pos, vel);
     if (this._hasBounds) {

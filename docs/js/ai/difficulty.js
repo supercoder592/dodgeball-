@@ -20,6 +20,8 @@ export const DIFFICULTY_IDS = Object.freeze(['easy', 'normal', 'hard', 'pro']);
  * @property {number} rearReactionMul       reaction multiplier for throws from outside the field of view
  * @property {number} rearBlindChance       chance to not notice a rear throw until it is within the peripheral radius
  * @property {number} fieldOfView           half-angle (deg) of the bot's field of view
+ * @property {number} anticipation          fraction of the reaction time removed by a fully watched wind-up (reading
+ *                                          the thrower's charge aimed at you, as real players do)
  * @property {number} dangerSenseReactionMul reaction multiplier while Specter's Danger Sense warns about a fastball
  * @property {number} cloakDetectionRadius  distance (m) inside which a cloaked enemy is still noticed
  * @property {number} obscuredMistargetChance chance to aim at a decoy beside an Obscured (cloned) enemy
@@ -54,7 +56,7 @@ export const DIFFICULTY_IDS = Object.freeze(['easy', 'normal', 'hard', 'pro']);
 
 /** Normal tier: the reference values every other tier is tuned against. */
 const NORMAL = {
-  reactionTime: 0.30, reactionJitter: 0.22, rearReactionMul: 1.8, rearBlindChance: 0.35, fieldOfView: 105,
+  reactionTime: 0.30, reactionJitter: 0.22, rearReactionMul: 1.8, rearBlindChance: 0.35, fieldOfView: 105, anticipation: 0.45,
   dangerSenseReactionMul: 0.45, cloakDetectionRadius: 2.5, obscuredMistargetChance: 0.5,
   decisionInterval: 0.32, decisionJitter: 0.30, hysteresis: 0.15, minBehaviourDwell: 0.35, aggression: 0.5,
   aimErrorDeg: 4.0, leadAccuracy: 0.8, chargeTimeMin: 0.2, chargeTimeMax: 1.2, throwHesitationMin: 0.35, throwHesitationMax: 0.8,
@@ -69,7 +71,7 @@ const NORMAL = {
 export const BOT_DIFFICULTY = Object.freeze({
   easy: Object.freeze({
     ...NORMAL,
-    reactionTime: 0.45, reactionJitter: 0.30, rearReactionMul: 2.0, rearBlindChance: 0.5, fieldOfView: 95,
+    reactionTime: 0.45, reactionJitter: 0.30, rearReactionMul: 2.0, rearBlindChance: 0.5, fieldOfView: 95, anticipation: 0.3,
     dangerSenseReactionMul: 0.5, cloakDetectionRadius: 1.5, obscuredMistargetChance: 0.65,
     decisionInterval: 0.45, decisionJitter: 0.35, hysteresis: 0.2, minBehaviourDwell: 0.5, aggression: 0.35,
     aimErrorDeg: 6.5, leadAccuracy: 0.55, throwHesitationMin: 0.6, throwHesitationMax: 1.3, opportunismSkill: 0.1,
@@ -81,7 +83,7 @@ export const BOT_DIFFICULTY = Object.freeze({
   normal: Object.freeze({ ...NORMAL }),
   hard: Object.freeze({
     ...NORMAL,
-    reactionTime: 0.20, reactionJitter: 0.16, rearReactionMul: 1.6, rearBlindChance: 0.2, fieldOfView: 115,
+    reactionTime: 0.20, reactionJitter: 0.16, rearReactionMul: 1.6, rearBlindChance: 0.2, fieldOfView: 115, anticipation: 0.55,
     dangerSenseReactionMul: 0.4, cloakDetectionRadius: 3.5, obscuredMistargetChance: 0.4,
     decisionInterval: 0.22, decisionJitter: 0.25, hysteresis: 0.12, minBehaviourDwell: 0.3, aggression: 0.65,
     aimErrorDeg: 2.2, leadAccuracy: 0.93, throwHesitationMin: 0.2, throwHesitationMax: 0.5, opportunismSkill: 0.6,
@@ -92,7 +94,7 @@ export const BOT_DIFFICULTY = Object.freeze({
   }),
   pro: Object.freeze({
     ...NORMAL,
-    reactionTime: 0.12, reactionJitter: 0.10, rearReactionMul: 1.4, rearBlindChance: 0.1, fieldOfView: 125,
+    reactionTime: 0.12, reactionJitter: 0.10, rearReactionMul: 1.4, rearBlindChance: 0.1, fieldOfView: 125, anticipation: 0.6,
     dangerSenseReactionMul: 0.35, cloakDetectionRadius: 4.5, obscuredMistargetChance: 0.3,
     decisionInterval: 0.15, decisionJitter: 0.2, hysteresis: 0.1, minBehaviourDwell: 0.25, aggression: 0.75,
     aimErrorDeg: 1.0, leadAccuracy: 1.0, throwHesitationMin: 0.1, throwHesitationMax: 0.3, opportunismSkill: 0.85,

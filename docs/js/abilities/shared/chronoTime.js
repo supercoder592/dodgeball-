@@ -18,7 +18,7 @@ const THREAT_STEP = 0.05;
 /** Body approximated as a vertical segment from knee height to just below the crown (m above the feet). */
 const BODY_BOTTOM = 0.35, BODY_TOP_FROM_HEIGHT = 0.1, CHEST_HEIGHT = 1.3, DEFAULT_HEIGHT = 1.8;
 /** Incapacitation reasons whose bodies are owned by another system and must not be teleported by a rewind. */
-const NO_REWIND_INCAP = new Set(['eliminated', 'grabbed', 'round', 'teleporting']);
+const NO_REWIND_INCAP = new Set(['eliminated', 'grabbed', 'round', 'teleporting', 'rewinding']);
 
 const _zero = new THREE.Vector3();
 const _planar = new THREE.Vector3();
@@ -187,6 +187,8 @@ export const fx = {
   stop(handle) { if (handle == null) return; try { game.vfx?.stop?.(handle); } catch (e) { warnOnce('vfx.stop', e); } },
   sfx(id, position, volume = 1, pitch = 1) { try { game.audio?.play?.(id, position, volume, pitch); } catch (e) { warnOnce(`audio.play(${id})`, e); } },
   pulse(type, intensity, duration) { try { game.renderer?.pulse?.(type, intensity, duration); } catch (e) { warnOnce(`renderer.pulse(${type})`, e); } },
+  /** Persistent (smoothed) screen look, 0 = off. */
+  sustain(type, amount) { try { game.renderer?.setSustained?.(type, amount); } catch (e) { warnOnce(`renderer.setSustained(${type})`, e); } },
   flash(player, color, duration) { try { player?.avatar?.flash?.(color, duration); } catch (e) { warnOnce('avatar.flash', e); } },
   tint(player, color, amount) { try { player?.avatar?.setTint?.(color, amount); } catch (e) { warnOnce('avatar.setTint', e); } },
   fovKick(deg, duration) { try { game.cameraRig?.addFovKick?.(deg, duration); } catch (e) { warnOnce('cameraRig.addFovKick', e); } },

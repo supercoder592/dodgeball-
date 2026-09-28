@@ -55,10 +55,13 @@ export const JUICE = Object.freeze({
   }),
 
   shake: Object.freeze({
-    /** Camera-space translation at shake 1.0 (x right, y up, z back), metres. Small: the camera is 4 m from the hero. */
+    /**
+     * Camera-space translation at shake 1.0 and noise peak (x right, y up, z back), metres. The fBm noise has an RMS
+     * of ~0.33 and stays within ~70% of the peak 95% of the time. Small: the camera is only 4.3 m from the hero.
+     */
     maxOffset: Object.freeze({ x: 0.09, y: 0.07, z: 0.05 }),
     /** Camera-space rotation at shake 1.0, degrees. Roll sells impacts best; yaw/pitch kept low to preserve aim. */
-    maxRotationDeg: Object.freeze({ pitch: 1.6, yaw: 1.4, roll: 3.0 }),
+    maxRotationDeg: Object.freeze({ pitch: 1.6, yaw: 1.4, roll: 3.2 }),
     traumaFrequency: 18,           // Hz of the trauma noise (base octave)
     octaves: 3,                    // fBm octaves (sway + rattle)
     lacunarity: 2.1,
@@ -249,6 +252,23 @@ class SquashSlot {
     if (parent) parent.remove(this.pivot);
     this.pivot.scale.set(1, 1, 1);
   }
+}
+
+/**
+ * Flash colours are always handed to the avatar as THREE.Color (callers may pass hex numbers or CSS strings).
+ * Cached per value: the avatar may keep the reference for the flash's duration, so a shared scratch colour would be
+ * unsafe, and there are only a handful of distinct flash colours in the game.
+ */
+const _colorCache = new Map();
+function toColor(c) {
+  if (c && c.isColor) return c;
+  const key = c == null ? 0xffffff : c;
+  let col = _colorCache.get(key);
+  if (!col) {
+    col = new THREE.Color(key);
+    if (_colorCache.size < 64) _colorCache.set(key, col);
+  }
+  return col;
 }
 
 /** Move `child` (already in parent.children) to `index`, preserving the order of the others. */
@@ -487,7 +507,7 @@ export class Juice {
    */
   flash(player, color = WHITE, duration = JUICE.flash.duration) {
     if (!this.settings.flashes || !player || !player.avatar || typeof player.avatar.flash !== 'function') return;
-    player.avatar.flash(color, duration);
+    player.avatar.flash(toColor(color), duration > 0 ? duration : JUICE.flash.duration);
   }
 
   /** Renderer grade pulse (guarded; disabled with ?flashes=0). */
