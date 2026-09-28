@@ -2,7 +2,7 @@
 // Arena (owner: render) - photo-plausible indoor dodgeball venue around the kernel Court. See WEB_ARCHITECTURE.md §3.4.
 //
 //   floor      : varnished maple hardwood (procedural PBR tile + clear-coat) with a painted-lines overlay blended in
-//                the floor shader (lines, centre circle + wordmark, tinted outfield strips), sports-vinyl run-off
+//                the floor shader (lines, centre circle + wordmark, team-tinted U outfields), sports-vinyl run-off
 //   walls      : padded run-off walls with seams & branding, painted concrete-block upper walls, dark ceiling
 //   stands     : stepped concrete bleachers on both long sides, instanced seats, handrails, LED ribbon boards,
 //                suites band, and a crowd of baked Rocketbox impostors (world/crowd.js) that reacts to the match
@@ -30,7 +30,7 @@ import { qualityId, qualityPreset } from '../render/quality.js';
 export const ARENA = Object.freeze({
   wallX: COURT.width / 2 + COURT.runOff,                          // 8.5  long-side padded walls
   wallZ: COURT.length / 2 + COURT.outfieldDepth + COURT.runOff,   // 16   end padded walls
-  hardwoodHalfX: 7.0,           // hardwood slab (court + outfield strips + margin)
+  hardwoodHalfX: 7.6,           // hardwood slab (court + side outfield arms to x = ±7 + margin past the outer line)
   hardwoodHalfZ: 13.6,
   hardwoodTile: 4,              // metres per hardwood texture tile
   padHeight: 1.2,
@@ -241,6 +241,12 @@ export class Arena {
     /** Interior of the padded walls + ceiling height (camera rigs / out-of-bounds helpers). */
     this.bounds = { minX: -ARENA.wallX, maxX: ARENA.wallX, minZ: -ARENA.wallZ, maxZ: ARENA.wallZ, minY: 0, maxY: ARENA.ceilingY };
     this.floorY = 0;
+    // Venue shell for Court.isOutOfArena: the outer faces of the bleacher back walls / end walls, and the ceiling.
+    this.court.setShell({
+      halfX: this._backX() + ARENA.wallThickness,
+      halfZ: ARENA.wallZ + ARENA.padThickness + ARENA.wallThickness,
+      maxY: ARENA.ceilingY,
+    });
     this._materials = [];
     this._textures = [];
     this._built = false;

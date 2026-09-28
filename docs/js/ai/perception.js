@@ -10,6 +10,9 @@
 //  wind-up reading  : a throw whose charge the bot watched (thrower in view, winding up at it) is noticed sooner -
 //                     reaction x (1 - anticipation x watched/windupFullPrime), like a player reading the arm
 //  Danger Sense     : Specter's passive (EV.DangerSense) shortens the delay of a locked-on fastball
+//  interception     : with profile.interceptChance > 0, an ENEMY PASS (single ball: infield <-> outfield lobs over our
+//                     half) is tracked too, with the same reaction delay; its "impact" is the moment it passes within
+//                     the catch radius of the chest (entries flagged isPass). Real throws always outrank passes.
 // Allocation-free: entries are pooled objects recycled in place.
 // ---------------------------------------------------------------------------------------------------------------
 import * as THREE from 'three';
@@ -17,7 +20,7 @@ import { game } from '../game.js';
 import * as Solver from '../combat/throwSolver.js';
 import { GRAVITY, BALL_RADIUS, ZONE } from '../core/constants.js';
 import { jitter, planarAngleDeg, planarDistance, predictCapsuleImpact } from './aiMath.js';
-import { BALL_STATE, bodyRadius, bodyHeight, forwardX, forwardZ } from './botWorld.js';
+import { BALL_STATE, bodyRadius, bodyHeight, forwardX, forwardZ, chestOf, combatProfile, matchBall } from './botWorld.js';
 
 /** Perception tuning (seconds, metres, m/s). */
 export const PERCEPTION = Object.freeze({
@@ -29,9 +32,12 @@ export const PERCEPTION = Object.freeze({
   windupFullPrime: 0.6,       // s of watched wind-up that grants the full anticipation bonus
   passedGrace: 0.05,          // s past the predicted impact before an unresolved prediction is dropped
   fallbackGravityScale: 0.65, // thrown gravity scale when a ball does not expose one (BASE_COMBAT.thrownGravityScale)
+  passCatchRadius: 0.85,      // m around the chest within which an enemy pass can be snatched (combat catchRadius)
+  passStep: 1 / 60,           // s sampling step of the pass reach test
 });
 
 const ZERO = new THREE.Vector3();
+const _chestTmp = new THREE.Vector3();
 let _solverBroken = false;
 let _incomingBroken = false;
 
@@ -62,6 +68,42 @@ export function predictBallImpact(ball, player, maxTime, outPoint) {
   const floorY = game.court ? game.court.floorY : 0;
   return predictCapsuleImpact(ball.position, ball.velocity || ZERO, g, ball.radius || BALL_RADIUS, player.position,
     bodyRadius(player), bodyHeight(player), maxTime, outPoint, floorY);
+}
+
+// Scratch state of timeToReachPoint (module scope: no closures / allocations).
+let _rx = 0, _ry = 0, _rz = 0, _rvx = 0, _rvy = 0, _rvz = 0, _rg = 0, _tx = 0, _ty = 0, _tz = 0, _rr2 = 0;
+function _within(t) {
+  const dx = _rx + _rvx * t - _tx, dy = _ry + _rvy * t - 0.5 * _rg * t * t - _ty, dz = _rz + _rvz * t - _tz;
+  return dx * dx + dy * dy + dz * dz <= _rr2;
+}
+/**
+ * First time (s) at which a live ball's centre comes within `radius` of `point` (ballistic, stops at the floor), or
+ * -1. Writes the ball centre at that moment into `outPoint`. Allocation-free twin of Trajectory.timeToReach.
+ */
+export function timeToReachPoint(ball, point, radius, maxTime, outPoint) {
+  const p = ball.position, v = ball.velocity || ZERO;
+  _rx = p.x; _ry = p.y; _rz = p.z; _rvx = v.x; _rvy = v.y; _rvz = v.z;
+  _rg = GRAVITY * (Number.isFinite(ball.gravityScale) ? ball.gravityScale : PERCEPTION.fallbackGravityScale);
+  _tx = point.x; _ty = point.y; _tz = point.z; _rr2 = radius * radius;
+  const floorY = (game.court ? game.court.floorY : 0) + (ball.radius || BALL_RADIUS);
+  let hit = -1;
+  if (_within(0)) hit = 0;
+  else {
+    let prev = 0;
+    for (let t = PERCEPTION.passStep; t <= maxTime + 1e-9; t += PERCEPTION.passStep) {
+      if (_ry + _rvy * t - 0.5 * _rg * t * t < floorY) return -1;
+      if (_within(t)) {
+        let lo = prev, hi = t;
+        for (let i = 0; i < 10; i++) { const mid = (lo + hi) * 0.5; if (_within(mid)) hi = mid; else lo = mid; }
+        hit = hi;
+        break;
+      }
+      prev = t;
+    }
+  }
+  if (hit < 0) return -1;
+  outPoint.x = _rx + _rvx * hit; outPoint.y = _ry + _rvy * hit - 0.5 * _rg * hit * hit; outPoint.z = _rz + _rvz * hit;
+  return hit;
 }
 
 /**
@@ -109,19 +151,21 @@ export class BotThreat {
     this.speedKmh = 0;
     /** game.time.now at which the bot became aware of the ball. */
     this.noticedAt = 0;
+    /** An enemy pass the bot could intercept (never a hit on the bot). */
+    this.isPass = false;
   }
   get isValid() { return this.ball !== null; }
-  clear() { this.ball = null; this.launchTime = 0; this.timeToImpact = Infinity; this.fromBehind = false; this.speedKmh = 0; this.noticedAt = 0; return this; }
+  clear() { this.ball = null; this.launchTime = 0; this.timeToImpact = Infinity; this.fromBehind = false; this.speedKmh = 0; this.noticedAt = 0; this.isPass = false; return this; }
   copyFrom(o) {
     this.ball = o.ball; this.launchTime = o.launchTime; this.timeToImpact = o.timeToImpact; this.impactPoint.copy(o.impactPoint);
-    this.fromBehind = o.fromBehind; this.speedKmh = o.speedKmh; this.noticedAt = o.noticedAt;
+    this.fromBehind = o.fromBehind; this.speedKmh = o.speedKmh; this.noticedAt = o.noticedAt; this.isPass = o.isPass;
     return this;
   }
   /** @param {Entry} e */
   fromEntry(e) {
     const b = e.ball;
     this.ball = b; this.launchTime = e.launchTime; this.timeToImpact = e.tti; this.impactPoint.copy(e.impact);
-    this.fromBehind = e.fromBehind; this.noticedAt = e.noticeAt;
+    this.fromBehind = e.fromBehind; this.noticedAt = e.noticeAt; this.isPass = e.isPass;
     this.speedKmh = Number.isFinite(b.speedKmh) ? b.speedKmh : (b.velocity ? b.velocity.length() * 3.6 : 0);
     return this;
   }
@@ -137,7 +181,7 @@ class Entry {
   reset() {
     this.ball = null; this.launchTime = 0; this.noticeAt = Infinity; this.reaction = 0;
     this.blind = false; this.fromBehind = false; this.seen = false; this.willHit = false;
-    this.predAt = -Infinity; this.predTti = -1; this.tti = Infinity;
+    this.predAt = -Infinity; this.predTti = -1; this.tti = Infinity; this.isPass = false;
   }
 }
 
@@ -183,27 +227,40 @@ export class BotPerception {
       const ball = list[b];
       if (!ball || ball.state !== BALL_STATE.LIVE || ball.isPass) continue;
       if (ball.lastThrower && !game.areEnemies(self, ball.lastThrower)) continue;
-
-      let e = this._find(ball, launchTimeOf(ball));
-      if (!e) e = this._add(ball, self, profile, rng, now, primer);
-      if (!e) continue; // queue full: the least important newcomer is ignored
-      e.seen = true;
-
-      if (e.blind) {
-        // Unnoticed rear throw: sensed only when it is about to arrive (sound / peripheral vision).
-        if (planarDistance(ball.position, self.position) > peripheralRadius) continue;
-        e.blind = false;
-        e.noticeAt = now + e.reaction * 0.5;
+      this._observe(ball, false, self, profile, rng, now, lookahead, peripheralRadius, primer);
+    }
+    list.length = 0; // do not keep balls alive through the scratch array
+    // Enemy passes (interception): the single match ball lobbed between their infield and outfield.
+    if (profile.interceptChance > 0) {
+      const ball = matchBall();
+      if (ball && ball.state === BALL_STATE.LIVE && ball.isPass && ball.lastThrower && game.areEnemies(self, ball.lastThrower)) {
+        this._observe(ball, true, self, profile, rng, now, lookahead, peripheralRadius, primer);
       }
-      if (now < e.noticeAt) { e.willHit = false; continue; }
-
-      this._predict(e, ball, self, now, lookahead);
-      if (!e.willHit) continue;
-      this.noticedCount++;
-      if (this.mostUrgent.ball === null || e.tti < this.mostUrgent.timeToImpact) this.mostUrgent.fromEntry(e);
     }
     this._compact();
-    list.length = 0; // do not keep balls alive through the scratch array
+  }
+
+  _observe(ball, isPass, self, profile, rng, now, lookahead, peripheralRadius, primer) {
+    let e = this._find(ball, launchTimeOf(ball));
+    if (!e) e = this._add(ball, self, profile, rng, now, primer);
+    if (!e) return; // queue full: the least important newcomer is ignored
+    e.seen = true;
+    e.isPass = isPass;
+
+    if (e.blind) {
+      // Unnoticed rear throw: sensed only when it is about to arrive (sound / peripheral vision).
+      if (planarDistance(ball.position, self.position) > peripheralRadius) return;
+      e.blind = false;
+      e.noticeAt = now + e.reaction * 0.5;
+    }
+    if (now < e.noticeAt) { e.willHit = false; return; }
+
+    this._predict(e, ball, self, now, lookahead);
+    if (!e.willHit) return;
+    this.noticedCount++;
+    const mu = this.mostUrgent;
+    // Real throws always outrank passes; among the same kind the soonest wins.
+    if (mu.ball === null || (mu.isPass && !isPass) || (mu.isPass === isPass && e.tti < mu.timeToImpact)) mu.fromEntry(e);
   }
 
   /** Specter's Danger Sense: notice this ball much faster (and even if it came from behind). */
@@ -236,7 +293,9 @@ export class BotPerception {
   _predict(e, ball, self, now, lookahead) {
     const vel = ball.velocity || ZERO;
     if (now - e.predAt >= PERCEPTION.repredictInterval || e.predVel.distanceToSquared(vel) > PERCEPTION.velocityTolerance ** 2) {
-      e.predTti = predictBallImpact(ball, self, lookahead, e.impact);
+      e.predTti = e.isPass
+        ? timeToReachPoint(ball, chestOf(self, _chestTmp), combatProfile(self).catchRadius || PERCEPTION.passCatchRadius, lookahead, e.impact)
+        : predictBallImpact(ball, self, lookahead, e.impact);
       e.predAt = now;
       e.predVel.copy(vel);
     }

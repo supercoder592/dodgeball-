@@ -27,8 +27,12 @@ export const GRAVITY = 9.81;
 export const BALL_RADIUS = 0.105;
 export const BALL_MASS = 0.35;
 
-/** Court: 18 x 9 m, Home defends -Z, Away +Z; outfield strips behind the OPPONENT's baseline. */
-export const COURT = Object.freeze({ length: 18, width: 9, outfieldDepth: 3, runOff: 4 });
+/**
+ * Court: 18 x 9 m, Home defends -Z, Away +Z. Each team's OUTFIELD is a U around the OPPONENT's half (Taiwanese /
+ * Japanese 外野): both sideline strips alongside that half (sideOutfieldWidth wide, centre line -> baseline) plus the
+ * strip behind its baseline (outfieldDepth deep), corners included. runOff = sideline -> padded wall.
+ */
+export const COURT = Object.freeze({ length: 18, width: 9, outfieldDepth: 3, sideOutfieldWidth: 2.5, runOff: 4 });
 
 export const TEAM = Object.freeze({ HOME: 0, AWAY: 1, NONE: -1 });
 export const ZONE = Object.freeze({ INFIELD: 'infield', OUTFIELD: 'outfield' });

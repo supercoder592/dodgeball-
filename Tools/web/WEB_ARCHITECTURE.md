@@ -35,11 +35,11 @@ Realistic humans: Microsoft Rocketbox avatars + motion capture (MIT), converted 
 | `js/core/events.js` | `EV` names + payload docs, `EventBus` |
 | `js/core/fsm.js`, `timers.js`, `rng.js` | `StateMachine`, `Cooldown`, `Meter`, seeded `Rng` (`game.rng`) |
 | `js/engine/assets.js` | `Assets`: `manifest`, `gltf(path)`, `texture(path, srgb)`, `clip(gender, key)` |
-| `js/world/court.js` | `Court` geometry: bounds `{minX,maxX,minZ,maxZ}`, `confinement(team, zone)`, spawn points, `Court.clamp/contains` |
+| `js/world/court.js` | `Court` geometry (4v4 single-ball rules). Regions `{minX,maxX,minZ,maxZ,hole}` (math in `js/world/courtMath.js`, pure + tested): `infieldBounds(team)` (hole null), `outfieldBounds(team)` = the team's **U around the opponent's half** (both side arms `halfW..halfW+sideOutfieldWidth` from the centre line to the baseline + the back strip incl. corners; outer box minus the opponent's half), `outfieldRects(team)` → [left arm, right arm, back strip] (paint / minimap), `confinement(team, zone)` (inset 0.35, hole grows). Hole-aware statics `Court.contains/clamp/closestPoint/distanceTo/inset`. `zoneAt(p, out, margin)` → `{team, zone}` or null (dead-ball owner; z = 0 is Away's), `servePoint(team)`, `outfieldPoint(team, u)` / `outfieldParam(team, p)` / `outfieldWaypoint(team, p, targetU, lookAhead)` (arc-length U path, u = 0 is always the -X arm end; bots steer with the waypoint, never across the hole), `outfieldSpot(team, i)` (0 = back centre, the starting outfielder's), `outfieldYaw(team, p)`, `outerHalfW/outerHalfL/outfieldPathLength`, `setShell({halfX, halfZ, maxY})` + `isOutOfArena(p)`, `spawnPoint(team, infieldSlot, infieldCount)`. `openingBallPositions` is deprecated. |
 | `js/gameplay/history.js` | `RewindHistory(capture, seconds, rate)`: `record(now)`, `sample(now, secondsAgo)`, `clear()` |
 | `js/abilities/abilityBase.js` | `AbilityBase` (lifecycle + hooks `onCast/onTick/onInterrupt/onCooldown`...), `SLOT`, `PHASE`, `FAIL`, `INTERRUPT`, `AI_HINT`, `registerAbility(id, cls)` |
 | `js/abilities/abilityController.js` | `AbilityController` (passive/skill/ultimate + ult meter) |
-| `js/abilities/abilityUtil.js` | `throwAbilityBall(thrower, opts)`, `groundPoint`, `clampToPlayerZone` |
+| `js/abilities/abilityUtil.js` | `throwEmpoweredBall(thrower, opts)` (throws the HELD match ball with a style / speed / payload; `throwAbilityBall` is a deprecated alias that can never create a ball), `groundPoint`, `clampToPlayerZone` (hole-aware) |
 | `js/abilities/roster.js` | `HEROES` (all spec numbers, bilingual text, avatar casting, `hiddenParts`), `heroById`, `heroMovement`, `heroCombat` |
 | `js/main.js`, `index.html` | boot sequence (constructs every system below with the exact names/signatures listed here) |
 
@@ -112,14 +112,22 @@ floor (bounce, `EV.BallBounced`; floor resets rally; any surface ends live). Fre
 ball–ball collisions. Realistic red rubber dodgeball look (pebbled normal map from a canvas, PBR).
 `balls.js` → `BallManager` (system): `matchBalls`, `active`, `setupMatchBalls(positions)`, `resetForRound(positions)`,
 `spawnAbilityBall(pos, style)`, `recycle(ball)`, `findNearest(pos, filter, maxDist)`, `incomingLive(player, out[])`,
-`registerField(effect /* {apply(ball, dt)} */)`, `unregisterField`, `applyFields(ball, dt)`; out-of-arena respawn.
+`registerField(effect /* {apply(ball, dt)} */)`, `unregisterField`, `applyFields(ball, dt)`.
+**Exactly one ball** (`rules.ballCount` is forced to 1): `get ball()` = `matchBalls[0]`; `spawnAbilityBall` returns null
+(abilities empower the held ball instead). `awardBall(ball, team, cause, nearPos, delay)` hides the ball and makes it
+reappear at the feet of `game.match.pickAwardReceiver(team, nearPos)` (reserved for that team for `delay + 2 s`,
+emits `EV.BallAwarded`) — used by the possession limit, out-of-arena balls (awarded to the opponents of the last thrower),
+Grand Vanish and the ball boy (unreachable spots → `nearestReachableSpot(pos)` after 2 s). Ball: `reserve(team, s)`,
+`clearReservation()`, `isReservedFor(team)`, `custodyTeam` (Screws' turret); `canBePickedUpBy` is hole-aware (pickup
+reach 0.55 m from the player's own region) and honours the reservation.
 `combat.js` → `Combat(player, profile)`: `hasBall heldBall isCharging chargeSeconds charge (0..1) catchArmed
 lastCatchInput perfectWindow perfectWindowMul catchingBlocked currentTarget counterBoostUntil passHandler profile`;
 `addThrowModifier({order, modify(params), committed?(params, ball)})`, `removeThrowModifier`, `tryPickup(ball)`,
 `tryPickupNearest()`, `giveBall(ball)`, `beginCharge()`, `releaseThrow()`, `cancelCharge()`,
 `throwNow(charge, target)`, `buildThrowParams(chargeSeconds, target, isAbility)`, `launchBall(ball, params)`,
 `tryStartCatch()`, `cancelCatch()`, `tryResolveCatch(ball, point, impactTime) -> CatchQuality`, `inCatchCone(pos)`,
-`tryPass()`, `receivePass(ball, from)`, `dropBall(velocity)`, `getThrowOrigin()`, `grantCounterBoost()`,
+`tryPass(to?)` (receiver: `to` > `intent.passTarget` > aim cone > nearest; passes crossing the enemy half are lobs),
+`previewPassReceiver()` (HUD pass marker), `receivePass(ball, from)`, `dropBall(velocity)`, `getThrowOrigin()`, `grantCounterBoost()`,
 `resetForRound()`, `update(dt)`.
 ThrowParams: `{ thrower, target, origin, aimDir, aimPoint, baseSpeed, charge, chargeSeconds, speedMul, radiusMul,
 rallyCount, gravityScale, unblockable, pierce, isAbility, isPass, isCounter, reveals, style, payload }`.
@@ -132,7 +140,8 @@ maxTime) -> {t, point}|null`, `Targeting.findBest(thrower, origin, dir, maxAngle
 knockback)`.
 Payload interface (any subset): `onLaunched(ball) onTick(ball, dt) onHitPlayer(ball, hit)->bool
 onAfterHitPlayer(ball, hit, outcome) onHitSurface(ball, point, normal, isFloor) onCaught(ball, catcher, quality)
-onEnded(ball)`. Perfect catch rewards: `game.match.reviveOneOutfield(team, 'perfectCatch', catcher)`, +0.15 ult,
+onEnded(ball)`. An enemy catching a PASS is an interception: possession only (`BallCaught.intercepted`, quality forced
+to `'normal'`; no revive / ult / counter boost). Perfect catch rewards: `game.match.reviveOneOutfield(team, 'perfectCatch', catcher)`, +0.15 ult,
 `grantCounterBoost()` (+20% next throw); caught ball `rallyCount+1`.
 
 ### 3.3 Characters — `js/characters/` (owner: **characters**)
@@ -160,7 +169,8 @@ aberration, saturation, exposure pulses) → SMAA/FXAA → OutputPass), `render(
 `pulse(type, intensity, duration)` with types `'hit' 'heavyHit' 'perfectCatch' 'ultimate' 'freeze' 'rewind' 'danger'`,
 `setSustained(type, amount)`, environment map (PMREM from RoomEnvironment tuned for an arena).
 `world/arena.js` → `Arena`: `async build(scene)` realistic indoor arena (hardwood court with painted lines,
-outfield strips, run-off vinyl, padded walls, bleachers with a subtle crowd, floodlight rig with real shadows);
+both teams' U outfields tinted in the owning team's colour with the centre line across the full width, the outer
+boundary and serve rings, run-off vinyl, padded walls, bleachers with a subtle crowd, floodlight rig with real shadows);
 procedural PBR canvas textures (`world/textures.js`); `court` (Court instance, also set as `game.court` by main),
 `colliders` (THREE.Box3[] for walls/bleachers), `lights`.
 
@@ -178,18 +188,33 @@ ragdoll hips, spectate orbit when no local player.
 
 ### 3.6 Match & boot (owner: **match**)
 `match/match.js` → `Match` (system): `phase` (`'idle'|'select'|'preRound'|'countdown'|'playing'|'roundEnd'|'matchEnd'`),
-`isPlaying`, `round`, `timeLeft`, `scores [home, away]`, `rules` (object: playersPerTeam 3, roundsToWin 2, roundTime 150,
-preRound 2.5, countdown 3, roundEnd 4, ballCount 6, outfieldHitRevives true, catchEliminatesThrower false,
-ragdollTime 2, reviveHp 1, ult gains...), `players`, `local`; `async startMatch(setup)` where setup =
-`{ localHero, localTeam, homeHeroes[3], awayHeroes[3], difficulty, spectate }`, `endMatch()`, `sendToOutfield(p)`,
+`isPlaying`, `round`, `timeLeft`, `scores [home, away]`, `rules` (object: playersPerTeam 4, startingOutfielders 1,
+roundsToWin 2, roundTime 150, preRound 2.5, countdown 3, roundEnd 4, ballCount 1 (forced), possessionLimit 10
+(`?possession=N`, 0 = off), possessionWarning 3, deadBallClock true, awardDelay 0.6, outOfArenaAwardDelay 1.5,
+outfieldHitRevives true, catchEliminatesThrower false, ragdollTime 2, reviveHp 1, ult gains...), `players`, `local`;
+`async startMatch(setup)` where setup = `{ localHero, localTeam, homeHeroes[], awayHeroes[], difficulty, spectate }`
+(lists are filled up to `playersPerTeam` with unused heroes → 8 distinct), `endMatch()`, `sendToOutfield(p)`,
 `reviveFromOutfield(p, cause, reviver)`, `reviveOneOutfield(team, cause, reviver)`, `countInfield(team)`; updates and
 fixed-updates every Player; outfield-hit revive rule; time-up rules; emits all match events.
+4v4 = 3 infield + 1 **starting outfielder** (元外野, `player.isStartingOutfielder`, never the local human): stays in the
+outfield all round, never revived by an outfield hit or a Perfect Catch (those revive ELIMINATED outfielders only). A team
+with no INFIELD players loses the round. **Serve**: each preRound one team gets the ball in its server's hand
+(`serveTeam`, `server`, `EV.ServeReady`): round 1 random (seeded), then the loser of the previous round, after a draw the
+team that did not serve. **Possession clock** (`possession = { team, holder, elapsed, limit, remaining, running,
+deadBall }`, read by the HUD and AI): runs while a team holds the ball (holder can act) or while a loose ball rests in its
+zone; released by any throw / pass; at the limit the ball is awarded to the opponents (`EV.PossessionWarning` 3-2-1,
+`EV.PossessionViolation`, `EV.PossessionChanged`). Also `pickAwardReceiver(team, nearPos)`, `isStartingOutfielder(p)`,
+`countEliminatedOutfield(team)`. Pure rules helpers in `match/outcome.js` (`nextServeTeam`, `pickStartingOutfielders`,
+`stepPossession`, `releasePossession`, `pickAwardReceiver`).
 
 ### 3.7 AI — `js/ai/bot.js` (owner: **ai**)
 `Bot(difficulty, seed)` with `sample(player, dt) -> intent` (same intent shape as humans, goes through the same state
 machine) and exported `buildAbilityContext(player)` → `{ self, nearestEnemy, nearestEnemyDistance, incomingBall,
-incomingTime, teammatesOutfield, enemiesInfield, alliesInfield, holdingBall, freeBallsNearby, ultCharge, timeLeft }`.
-Difficulties `'easy'|'normal'|'hard'|'pro'`.
+incomingTime, teammatesOutfield, eliminatedTeammatesOutfield, enemiesInfield, alliesInfield, holdingBall, teamHasBall,
+enemyHasBall, ballInOwnZone, freeBallsNearby, ultCharge, timeLeft }`.
+Difficulties `'easy'|'normal'|'hard'|'pro'`. Single-ball roles: the side with the ball attacks through infield ↔ outfield
+crossfire (passes via `intent.passTarget`), releases before the possession limit, the other side defends facing the
+holder; only the zone owner retrieves a dead ball; outfielders move along the U with `court.outfieldWaypoint`.
 
 ### 3.8 Input & UI — `js/input/`, `js/ui/`, `css/game.css` (owner: **ui**)
 `input/input.js` → `Input` (system, first): keyboard/mouse (pointer lock), Gamepad API, touch controls (virtual stick +
@@ -198,8 +223,11 @@ buttons on mobile); `HumanController` with `sample(player, dt) -> intent` (camer
 `pausePressed`. Controls: WASD, mouse, Shift sprint, Space jump, C/Ctrl slide, LMB hold-throw, RMB catch, Q pass,
 E pickup, F skill, R ultimate, Tab cycle target, Esc pause.
 `ui/hud.js` → `Hud` (system): DOM overlay (HP, ult meter, skill/ult cooldown radials, charge bar, catch feedback
-(PERFECT!), crosshair + lock marker, scoreboard/timer/infield pips, kill feed, banners, Danger Sense red edges, minimap
-hiding cloaked/silent enemies, last throw km/h), `banner(text, color, duration)`, `show(b)`.
+(PERFECT!), crosshair + lock marker, scoreboard/timer/player pips (ring pip = starting outfielder), possession shot-clock bar +
+possession dot, local 3-2-1 countdown, serve / time-violation banners, interception + out-of-play toasts, pass-receiver
+marker, off-screen ball pointer, kill feed, Danger Sense red edges, minimap (both U outfields, the single ball, holder
+ring, starting-outfielder diamond, award-spot ring; hides cloaked/silent enemies), last throw km/h),
+`banner(text, color, duration)`, `show(b)`.
 `ui/heroSelect.js` → `HeroSelect.show(roster, onConfirm(setup))`, `HeroSelect.hide()` (10 hero cards with portraits
 `assets/heroes/<id>/portrait.webp`, bilingual names, abilities, team, difficulty, Play).
 `ui/loading.js` → `Loading.show()`, `Loading.progress(loaded, total, label)`, `Loading.hide()`, `Loading.error(msg)`.
@@ -220,12 +248,27 @@ gesture, event-driven; mute/volume settings.
 One file per hero exporting three classes `extends AbilityBase` with `static defaults` and registering them:
 `registerAbility('rayne.supersonic_meteor', RayneSupersonicMeteor)`. Ids/params/cooldowns are in `roster.js`.
 Shared world objects in `js/abilities/shared/<hero>*.js`. `js/abilities/heroes/index.js` imports all ten files.
+Single-ball rule: no ability may create a catchable / pick-up-able / hitting ball. Throw skills (Rayne Supersonic Meteor
+and Hyperbeam Transpierce, Elsa Glacier Freeze, Screws Glue Trap Ball) are **empowered throws** of the held match ball
+(`requiresBall: true`, `abilityUtil.throwEmpoweredBall`); Shadow's illusion balls are visual only. `usableFromOutfield`
+abilities keep the starting outfielder's hero identity.
 
 ## 5. Boot (`js/main.js`, kernel)
-Renderer → Assets (manifest) → Physics → Arena (`game.court = arena.court`) → systems (Input, CameraRig, Juice, Vfx,
-Audio, BallManager, Match, Hud) → preload avatars + clips with the loading screen → `game.start()` → hero select (or
-`?autoplay=1`, `?spectate=1`). URL params: `seed`, `quality`, `hero`, `team`, `difficulty`, `debug`.
-`window.__DU = { ready, game, stats() }` is used by the smoke test.
+Loading screen (one painted frame before any WebGL work) → Renderer → Assets (manifest) → Physics → Arena
+(`game.court = arena.court`; the crowd atlas streams in afterwards) → systems (Input, CameraRig, Juice, Vfx, Audio,
+BallManager, Match, Hud) → the 10 hero-select portraits → `game.start()` → hero select (or `?autoplay=1`,
+`?spectate=1`). No hero model, map or clip is loaded before the menu. While hero select is open, main.js prefetches
+in the background (one hero per idle callback: GLB + clips parsed, maps only HTTP-cached). Every match start (PLAY,
+watch AI, autoplay) goes through `launchMatch(setup)`: loading screen with the line-up → exactly the line-up's
+models / maps / clips → `Match.startMatch` → shader warm-up (compile(Async) + real frames, preRound clock frozen) →
+countdown. URL params: `seed`, `quality`, `hero`, `team`, `difficulty`, `debug`, `norender`, `sw` (0/1).
+`window.__DU = { ready, game, stats(), loader() }` is used by the smoke test, the load probe and the service-worker
+reload check in index.html (`loader().launching`, `#hero-select.open`: keep these names).
+Each boot phase ends with a `performance.mark('du:boot:<phase>')` (`modules renderer manifest arena systems preload
+ready firstFrame`; `preload` = portraits ready; keep them when restructuring boot, add new ones freely); a match start
+adds `du:match:assets` (line-up loaded) and `du:match:warm` (warm-up done). `node Tools/web/loadprobe.mjs [--mobile]
+[--play] [--cpu] [--runs 3] --out x.json` reports menu time, phase durations, bytes by category and match-start time
+from them (see its header) - run it before and after any load-time change.
 
 ## 6. Assets (`docs/assets/`)
 `manifest.json`: `heroes[<Hero>] = { avatar, gender ('male'|'female'), folder ('heroes/rayne/'), model ('model.glb'),
@@ -236,3 +279,22 @@ G=roughness, B=metal 0), alphaTest } } }`, `clips.m|f[<key>] = { file, loop }` w
 `Bip01_L_Clavicle`, `Bip01_L_UpperArm`, `Bip01_L_Forearm`, `Bip01_L_Hand`, `Bip01_L_Thigh`, `Bip01_L_Calf`,
 `Bip01_L_Foot`, (+ R), fingers `Bip01_R_Finger1`… (three.js sanitises spaces to underscores). Clips contain only
 bone rotations + `Bip01` translation; remove horizontal root motion at load (keep Y). Textures use glTF UVs (`flipY=false`).
+Encoding (Tools/web/build_assets.py + gltf_post.mjs): hero and clip GLBs are EXT_meshopt_compression (quantised
+UV/normal/weights, POSITION stays f32 because Avatar._computeScale measures the bounding box), so every GLTFLoader
+needs `setMeshoptDecoder` (engine/assets.js does it lazily with `three/addons/libs/meshopt_decoder.module.js`).
+Clips are resampled at tolerance 1e-4 and must always be regenerated from the Rocketbox FBX (`build_assets.py`);
+never re-process the GLBs in docs/assets (gltf_post.mjs copies already-compressed input unchanged, and a second
+resample of already-resampled keys adds error).
+Maps: colour 1024 px, normal 512 px, ORM 256 px WebP, decoded off the main thread (createImageBitmap) where supported.
+`crowd/atlas.json` + `atlas-64|96|128.webp`: the crowd impostor atlas pre-baked by `node Tools/web/bake_crowd.mjs`
+(re-run it after changing crowd heroes / poses / framing, hero assets or hiddenParts; a CROWD change without a re-bake
+falls back to a runtime bake after boot).
+
+## 7. Deploy (`Tools/web/deploy_pages.sh`)
+The deployed site is built from a copy of docs/: `bundle.mjs` (esbuild) packs js/main.js + three + cannon-es into one
+minified `bundle/<hash>/main.js` (+ the synth worker), `build_site.mjs` rewrites index.html (import map and
+`js/main.js` tag → bundle, modulepreload / preload hints) and fills sw.js (cache-first for every hashed file, one
+cache per deploy, unchanged files carried over). `deploy_pages.sh --dry-run <dir>` builds the same site without git;
+test it with `smoke.mjs --root <dir>`, `DU_ROOT=<dir> audit.mjs` / `loadprobe.mjs --query "seed=7&sw=1"`.
+Source constraints: dynamic imports literal (or `import(CONST)` of a same-file string constant), workers as
+`new URL('./x.js', import.meta.url)`, every bare specifier in the import map of docs/index.html.

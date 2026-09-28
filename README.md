@@ -1,10 +1,10 @@
-# Dodgeball Ultra 🏐 — 3v3 超能力躲避球
+# Dodgeball Ultra 🏐 — 超能力躲避球（網頁版 4v4 單球）
 
 ## ▶ 立即遊玩：**https://supercoder592.github.io/dodgeball-/**
 
-**瀏覽器即玩（Three.js / WebGL）· Unity 6 LTS + HDRP 版本 · 真人動作捕捉角色 · 10 名英雄 · 3v3（你 + 5 個 AI）**
+**瀏覽器即玩（Three.js / WebGL）· Unity 6 LTS + HDRP 版本 · 真人動作捕捉角色 · 10 名英雄 · 網頁版 4v4（內場 3 + 外場 1，你 + 7 個 AI）· 單球**
 
-> 寫實風格的 3v3 超能力躲避球。角色使用 **Microsoft Rocketbox 真人模型**（完整骨架綁定、寫實貼圖、MIT 授權）與
+> 寫實風格的超能力躲避球。角色使用 **Microsoft Rocketbox 真人模型**（完整骨架綁定、寫實貼圖、MIT 授權）與
 > **真人動作捕捉動畫**，不是程式生成的人體。投球、接球等運動動作以 IK 疊加在動捕動畫上；被淘汰時切換為物理布娃娃（Ragdoll）。
 > 看台上的觀眾也是用同一批真人模型與動捕動畫烘焙出來的。
 
@@ -17,6 +17,18 @@
 * 網址參數：`?quality=low|medium|high`、`?spectate=1`（AI 對戰）、`?autoplay=1&hero=Rayne`、`?difficulty=hard`。
 * 角色展示頁：`/dev/avatar-viewer.html`。
 * 原始碼在 `docs/`（原生 ES modules，不需 build），更新網站：`Tools/web/deploy_pages.sh`。
+
+#### 網頁版規則（4v4 · 單球 · 台灣／日本式外場）
+
+* **全場只有一顆球**：每回合一方持球開球（第 1 回合隨機，之後由上一回合輸的一方發球；平手重賽則換邊發球）。
+* **4v4**：每隊 **內場 3 人 + 外場 1 人（元外野）**。元外野整回合都留在外場，不會回內場。
+* **外場包圍敵方半場**：兩側邊線外的長條（中線到敵方底線）加上敵方底線後方（含四角），地板上以隊色標示。
+  內場與外場隊友可越過敵方互相傳球，形成夾擊；敵人接到傳球只算搶到球權（攔截）。
+* **持球時限 10 秒**：持球（或讓球停在己方場地）超過 10 秒，球權交給對方；最後 3 秒畫面倒數。網址 `?possession=N` 可調整（0 關閉）。
+* **死球**：球停在誰的區域就由誰撿（內場半場 → 該隊內場；外場 → 該隊外場）。場外撿不到的位置由球僮約 2 秒後送回；球飛出場館則判給最後投球者的對手。
+* **出局與復活**：被擊中淘汰後移至外場，外場擊中敵方內場球員即可回場；完美接球可復活一名「出局」的外場隊友。
+  內場沒有人的一方輸掉該回合（外場不算）。時間到比較內場人數、再比血量。三戰兩勝。
+* 會產生額外球的技能（Rayne 超音速隕石／極光貫穿、Elsa 冰河凍結、Screws 黏膠陷阱球）改為「強化手中的球」投出，需要持球。
 
 ---
 
@@ -77,6 +89,23 @@
 is published from the `gh-pages` branch by `Tools/web/deploy_pages.sh`. Realistic Rocketbox avatars/clips are converted
 by `Tools/web/build_assets.py`; `node Tools/web/smoke.mjs` plays a headless AI-vs-AI match and reports errors +
 screenshots. Contract: `Tools/web/WEB_ARCHITECTURE.md`.
+
+**Web rules (4v4, one ball, Taiwanese/Japanese outfield):**
+
+* **Exactly one ball.** Each round one team serves with the ball in hand (round 1 random, then the loser of the previous
+  round; after a drawn/replayed round the other team).
+* **4v4:** each team is **3 infield players + 1 starting outfielder** who stays in the outfield all round.
+* **The outfield surrounds the enemy half:** both sideline strips alongside it (centre line to baseline) plus the strip
+  behind its baseline, corners included, painted in the owning team's colour. Pass between your infield and outfield over
+  the enemy for crossfire; an enemy catching a pass just takes possession (interception).
+* **10 s possession limit:** holding the ball (or leaving it on your floor) for 10 s gives it to the opponents; the HUD
+  counts down the last 3 s. `?possession=N` tunes it (0 = off).
+* **Dead balls** belong to whoever's zone they rest in; unreachable spots are returned by a ball boy after ~2 s; a ball
+  that leaves the arena goes to the opponents of its last thrower.
+* **Eliminated** players go to the outfield and come back in by hitting an infield enemy; a Perfect Catch revives one
+  eliminated outfielder. A team with no infield players loses the round. Best of 3.
+* Skills that used to conjure an extra ball (Rayne's Meteor/Hyperbeam, Elsa's Glacier Freeze, Screws' Glue Trap Ball) now
+  empower the ball in your hand and need it.
 
 ## Quick start (Unity, English)
 

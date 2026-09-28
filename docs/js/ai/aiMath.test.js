@@ -5,6 +5,7 @@ import { Rng } from '../core/rng.js';
 import {
   timeToCover, predictCapsuleImpact, interceptPoint, planCatchLead, chooseSidestep, roomAlong, planarDistanceToBounds,
   shrinkBounds, clampPlanar, keepInside, seek, perlin1D, weightedPick, planarAngleDeg, edgeProximity, jitter,
+  copyBounds, containsPlanar, crossfireScore, passLaneRisk,
 } from './aiMath.js';
 import { BOT_DIFFICULTY, DIFFICULTY_IDS, createProfile, heroTraits, normalizeDifficulty } from './difficulty.js';
 
@@ -156,4 +157,72 @@ test('noise, jitter, roulette and angles', () => {
   assert.equal(weightedPick([1, 1], 2, 0.8), 1);
   close(planarAngleDeg(0, 1, 1, 0), 90);
   close(planarAngleDeg(0, 1, 0, -3), 180);
+});
+
+// Home's U outfield confinement (world/court.js, inset 0.35): arms 4.85..6.65 on both sides of the Away half, back
+// strip 9.35..11.65; the hole (Away half + margins) overshoots the open centre-line side by 1 m.
+const HOME_U = { minX: -6.65, maxX: 6.65, minZ: 0.35, maxZ: 11.65, hole: { minX: -4.85, maxX: 4.85, minZ: -1.35, maxZ: 9.35 } };
+
+test('hole-aware clamp and distance: U outfield exits through the nearest exit edge, never the open side', () => {
+  const o = v(0, 0, 0);
+  let c = clampPlanar(v(0, 1, 4.5), HOME_U, o); close(c.x, -4.85); close(c.z, 4.5); close(c.y, 1);
+  c = clampPlanar(v(0, 0, 8.9), HOME_U, o); close(c.x, 0); close(c.z, 9.35);
+  c = clampPlanar(v(0, 0, -0.5), HOME_U, o); close(c.x, -4.85); close(c.z, 0.35);
+  c = clampPlanar(v(5.5, 0, 3), HOME_U, o); close(c.x, 5.5); close(c.z, 3); // on the arm: unchanged
+  c = clampPlanar(v(-6.5, 0, 11.5), HOME_U, o); close(c.x, -6.5); close(c.z, 11.5); // corner
+  c = clampPlanar(v(4.85, 0, 5), HOME_U, o); close(c.x, 4.85); // hole edge is walkable
+  close(planarDistanceToBounds(v(0, 0, 4.5), HOME_U), 4.85);
+  close(planarDistanceToBounds(v(4.3, 0, 3), HOME_U), 0.55);
+  assert.equal(planarDistanceToBounds(v(5.5, 0, 3), HOME_U), 0);
+  assert.equal(containsPlanar(HOME_U, v(5.5, 0, 3)), true);
+  assert.equal(containsPlanar(HOME_U, v(0, 0, 3)), false);
+});
+
+test('hole-aware shrink / copy / keepInside', () => {
+  const s = shrinkBounds(HOME_U, 0.4, {});
+  close(s.maxX, 6.25); close(s.maxZ, 11.25);
+  close(s.hole.maxX, 5.25); close(s.hole.maxZ, 9.75); close(s.hole.minZ, -1.75); // hole grows, open side too
+  // A huge margin collapses the arms to a walkable line instead of inverting them.
+  const t = shrinkBounds(HOME_U, 5, {});
+  assert.ok(t.hole.maxX < t.maxX && t.hole.maxZ < t.maxZ);
+  const pt = clampPlanar(v(0, 0, 4), t, v(0, 0, 0));
+  assert.equal(containsPlanar(t, pt), true); // lands on a collapsed band, never inside the hole
+  const c = copyBounds(HOME_U, {});
+  assert.notEqual(c.hole, HOME_U.hole);
+  assert.deepEqual({ ...c.hole }, HOME_U.hole);
+  const buf = c.hole;
+  copyBounds(HOME_INFIELD, c); assert.equal(c.hole, null);
+  copyBounds(HOME_U, c); assert.equal(c.hole, buf); // the buffer is reused (no allocation)
+  // Standing on the right arm's inner wall: a move into the hole is zeroed, a move along the wall is kept.
+  const m = keepInside(v(4.9, 0, 5), v(-1, 0, 0.5), HOME_U, 0.1);
+  assert.equal(m.x, 0); assert.equal(m.z, 0.5);
+  const m2 = keepInside(v(0, 0, 9.4), v(0.7, 0, -1), HOME_U, 0.1);
+  assert.equal(m2.z, 0); assert.equal(m2.x, 0.7);
+  const m3 = keepInside(v(5.8, 0, 5), v(-1, 0, 0), HOME_U, 0.1); // mid-arm: free to move
+  assert.equal(m3.x, -1);
+});
+
+test('crossfire score and pass lane risk', () => {
+  close(crossfireScore(0, 0, 0, -5, 0, 5), 1);      // opposite the holder
+  close(crossfireScore(0, 0, 0, -5, 0, -8), 0);     // same side as the holder
+  close(crossfireScore(0, 0, 0, -5, 5, 0), 0.5);    // 90 degrees
+  const enemies = new Float64Array([0.5, -6.5, 0, 0, 3, 3]);
+  // Pass from (0, -8) to (0, 8): the enemy near the start counts, the one mid-court does not, (3, 3) is off the lane.
+  assert.equal(passLaneRisk(0, -8, 0, 8, enemies, 3, 1.2, 0.2), 1);
+  assert.equal(passLaneRisk(0, -8, 0, 8, new Float64Array([0, 7.5]), 1), 1); // near the receiver
+  assert.equal(passLaneRisk(0, -8, 0, 8, new Float64Array([0, 0]), 1), 0);
+});
+
+test('single-ball difficulty knobs scale with the tier', () => {
+  const tiers = DIFFICULTY_IDS.map((id) => BOT_DIFFICULTY[id]);
+  for (let i = 1; i < tiers.length; i++) {
+    const a = tiers[i - 1], b = tiers[i];
+    assert.ok(b.passChance > a.passChance, 'pass');
+    assert.ok(b.interceptChance > a.interceptChance, 'intercept');
+    assert.ok(b.possessionSafety < a.possessionSafety, 'safety');
+    assert.ok(b.flankSkill > a.flankSkill, 'flank');
+    assert.ok(b.serveHoldMax < a.serveHoldMax && b.serveHoldMin <= b.serveHoldMax, 'serve hold');
+  }
+  close(BOT_DIFFICULTY.normal.possessionSafety, 1.6);
+  close(BOT_DIFFICULTY.easy.catchAttemptProbability, 0.38);
 });

@@ -165,7 +165,7 @@ class HeroSelectScreen {
         <header class="hs-top">
           <div class="hs-brand"><b>DODGEBALL</b><span>ULTRA</span></div>
           <div class="hs-heading">SELECT YOUR HERO <small>選擇英雄</small></div>
-          <div class="hs-mode">3 v 3 · BEST OF 3 <small>三戰兩勝</small></div>
+          <div class="hs-mode"><span>4 v 4 · 3 IN + 1 OUT · ONE BALL · BEST OF 3</span> <small>內場 3 人＋外場 1 人 · 單球 · 三戰兩勝</small></div>
         </header>
         <main class="hs-main">
           <div class="hs-grid" role="listbox" aria-label="Heroes"></div>

@@ -3,7 +3,8 @@
 //
 //   finalSpeed(params)                 V = V_base * speedMul * (1 + 0.10 * rally), capped at 220 km/h
 //   ThrowSolver.solve(params)          velocity + flight time: lead-aim a target's chest, else the aim point, else
-//                                      straight along aimDir - always a low-arc ballistic under gravity*gravityScale
+//                                      straight along aimDir - a low-arc ballistic under gravity*gravityScale, or a
+//                                      fixed-elevation lob when params.launchAngle is set (passes over the opponents)
 //   Trajectory.*                       closed-form ballistic queries (AI catch timing, Danger Sense, bots)
 //   Targeting.*                        aim-assist cone / range / line-of-sight, target cycling
 //   HitResolver.resolveHit             the single place a ball hit becomes damage: payload hooks -> Health ->
@@ -16,7 +17,7 @@ import { EV } from '../core/events.js';
 import { GRAVITY, MS_TO_KMH, STANDARD_HIT_DAMAGE, BALL_RADIUS, ZONE } from '../core/constants.js';
 import {
   computeFinalSpeed, solveLaunch, leadTarget, positionAt, firstTimeWithin, knockbackForSpeed, planarAngle,
-  signedPlanarAngle,
+  signedPlanarAngle, solveAtAngle, THROW_MATH,
 } from './throwMath.js';
 import { makeSweepHit, sweepSphereAABB, sweepSphereCapsuleY, sweepSpherePlaneY } from './sweep.js';
 
@@ -105,6 +106,31 @@ export const ThrowSolver = {
     const origin = params.origin || _zeroV;
     const target = params.target;
     let flightTime = Infinity, ok = false;
+
+    // Lob at a fixed elevation (passes across the opponents' half): toward the target's chest, else the aim point.
+    if (Number.isFinite(params.launchAngle)) {
+      const to = target && target.position ? chestOf(target, _a) : (params.aimPoint && params.aimPoint.isVector3 ? _a.copy(params.aimPoint) : null);
+      if (to) {
+        solveAtAngle(origin, to, params.launchAngle, g, _sol);
+        // Lead a moving receiver (planar, capped like leadTarget): a lob is slow, so its flight time matters.
+        const tv = target && target.velocity;
+        if (_sol.ok && tv && (tv.x || tv.z)) {
+          _c.copy(to);
+          for (let i = 0; i < 3 && _sol.ok; i++) {
+            const t = Math.min(_sol.time, THROW_MATH.maxLeadTime);
+            to.x = _c.x + tv.x * t; to.z = _c.z + tv.z * t;
+            solveAtAngle(origin, to, params.launchAngle, g, _sol);
+          }
+        }
+        const cap = Number.isFinite(params.maxSpeed) ? params.maxSpeed : Infinity;
+        if (_sol.ok && _sol.speed <= cap) {
+          velocity.set(_sol.x, _sol.y, _sol.z);
+          aim.copy(to);
+          out.velocity = velocity; out.aimPoint = aim; out.flightTime = _sol.time; out.ok = true;
+          return out;
+        }
+      }
+    }
 
     if (target && target.position) {
       chestOf(target, _a);

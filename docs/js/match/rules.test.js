@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   countsAsInfield, tallyTeams, isWipedOut, decideRound, applyRoundResult, pickLongestWaiting, lowestFreeIndex,
-  pickSpawnSlot, countdownNumber, ROUND_END_REASON, NO_WINNER,
+  pickSpawnSlot, countdownNumber, ROUND_END_REASON, NO_WINNER, nextServeTeam, pickStartingOutfielders,
+  makePossessionClock, stepPossession, releasePossession, pickAwardReceiver,
 } from './outcome.js';
 import { TEAM } from '../core/constants.js';
 
@@ -82,4 +83,80 @@ test('countdown shows 3, 2, 1 then 0', () => {
   assert.equal(countdownNumber(1.0, 3), 2);
   assert.equal(countdownNumber(2.5, 3), 1);
   assert.equal(countdownNumber(3.0, 3), 0);
+});
+
+// ------------------------------------------------------------------ single ball: serve, starters, possession clock
+
+test('serve: coin for round 1, then the loser serves, a draw alternates', () => {
+  assert.equal(nextServeTeam(1, NO_WINNER, TEAM.NONE, 0.2), TEAM.HOME);
+  assert.equal(nextServeTeam(1, NO_WINNER, TEAM.NONE, 0.7), TEAM.AWAY);
+  assert.equal(nextServeTeam(2, TEAM.HOME, TEAM.HOME, 0.1), TEAM.AWAY);
+  assert.equal(nextServeTeam(2, TEAM.AWAY, TEAM.HOME, 0.9), TEAM.HOME);
+  assert.equal(nextServeTeam(3, NO_WINNER, TEAM.HOME, 0.1), TEAM.AWAY);
+  assert.equal(nextServeTeam(3, NO_WINNER, TEAM.AWAY, 0.9), TEAM.HOME);
+});
+
+test('starting outfielders: highest non-local slots; the human always starts infield', () => {
+  const L = (local) => [0, 1, 2, 3].map((slot) => ({ slot, isLocal: slot === local }));
+  assert.deepEqual(pickStartingOutfielders(L(0), 1), [3]);
+  assert.deepEqual(pickStartingOutfielders(L(3), 1), [2]);
+  assert.deepEqual(pickStartingOutfielders(L(-1), 1), [3]);
+  assert.deepEqual(pickStartingOutfielders(L(0), 0), []);
+  assert.deepEqual(pickStartingOutfielders(L(2), 2), [3, 1]);
+});
+
+test('a team whose only player left is an outfielder has nobody infield and loses', () => {
+  const t = tallyTeams([
+    P(TEAM.HOME, 'outfield'), P(TEAM.HOME, 'outfield', { eliminated: true }), P(TEAM.HOME, 'infield', { awaitingOutfield: true, eliminated: true }),
+    P(TEAM.AWAY, 'infield'), P(TEAM.AWAY, 'outfield'),
+  ]);
+  assert.deepEqual(t.infield, [0, 1]);
+  assert.deepEqual(decideRound({ homeInfield: t.infield[0], awayInfield: t.infield[1], timeUp: false }),
+    { winner: TEAM.AWAY, reason: ROUND_END_REASON.ELIMINATED });
+});
+
+test('possession clock: runs only while running, resets on a team change, warns 3-2-1 once, -1 at the limit', () => {
+  const c = makePossessionClock();
+  assert.equal(stepPossession(c, TEAM.HOME, true, 0.5, 10), 0);
+  assert.equal(c.changed, true);
+  assert.equal(c.team, TEAM.HOME);
+  assert.equal(c.elapsed, 0.5);
+  stepPossession(c, TEAM.HOME, false, 2, 10); // frozen / stunned holder: paused
+  assert.equal(c.elapsed, 0.5);
+  assert.equal(c.changed, false);
+  stepPossession(c, TEAM.NONE, true, 2, 10); // ball in flight: nobody owns it, paused, team kept
+  assert.equal(c.elapsed, 0.5);
+  // A drop and a re-pickup by the same team (loose ball on our floor, still ours) does not reset.
+  stepPossession(c, TEAM.HOME, true, 1, 10);
+  assert.equal(c.elapsed, 1.5);
+  const warns = [];
+  for (let i = 0; i < 200; i++) {
+    const r = stepPossession(c, TEAM.HOME, true, 0.05, 10);
+    if (r !== 0) warns.push(r);
+    if (r === -1) break;
+  }
+  assert.deepEqual(warns, [3, 2, 1, -1]);
+  // Team change resets.
+  stepPossession(c, TEAM.AWAY, true, 0.1, 10);
+  assert.equal(c.team, TEAM.AWAY); assert.equal(c.changed, true);
+  assert.ok(Math.abs(c.elapsed - 0.1) < 1e-9);
+  // Release (throw / pass) resets to nobody.
+  releasePossession(c);
+  assert.equal(c.team, TEAM.NONE); assert.equal(c.elapsed, 0);
+  // Disabled clock never fires.
+  const d = makePossessionClock();
+  for (let i = 0; i < 100; i++) assert.equal(stepPossession(d, TEAM.HOME, true, 1, 0), 0);
+});
+
+test('award receiver: nearest eligible infielder beats a nearer outfielder; outfielder fallback; -1 when nobody', () => {
+  const cands = [
+    { x: 0, z: 1, infield: false, eligible: true },
+    { x: 0, z: 5, infield: true, eligible: true },
+    { x: 0, z: 3, infield: true, eligible: true },
+    { x: 0, z: 0, infield: true, eligible: false },
+  ];
+  assert.equal(pickAwardReceiver(cands, 0, 0), 2);
+  assert.equal(pickAwardReceiver([cands[0], cands[3]], 0, 0), 0);
+  assert.equal(pickAwardReceiver([cands[3]], 0, 0), -1);
+  assert.equal(pickAwardReceiver([], 0, 0), -1);
 });

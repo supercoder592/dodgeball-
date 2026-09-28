@@ -7,8 +7,12 @@
 //   live       thrown: field effects -> payload.onTick -> gravity x gravityScale + air drag -> SWEPT SPHERE against
 //              hittables (clones, shields, turrets), enemy catch reach / bodies / held balls, arena colliders and the
 //              floor, resolved in time-of-impact order (ties: hittables first). Any surface contact ends 'live'.
-//   stasis     hovers with a slow bob (Chrono), then resumes its preserved velocity
-//   despawned  hidden (Houdini's Grand Vanish, out of arena), then respawns
+//   stasis     hovers with a slow bob (Chrono), then resumes its preserved velocity; may be snatched (pickup rules)
+//   despawned  hidden (award hand-over, ball boy, Grand Vanish, turret hopper), then respawns at its spot
+// Single-ball ownership (WEB_ARCHITECTURE.md §3.2): a loose ball may only be picked up by a player whose zone region
+// (infield half or U outfield, hole-aware) is within pickupZoneReach of it, and not while it is reserved for the
+// other team (reserve(): a ball awarded to a team is theirs for a moment after it reappears). custodyTeam marks a
+// ball stored by a team's gadget (Screws' turret) for the possession clock.
 // Live contact rules
 //   thrower ignored for 0.15 s; teammates pass through unless it is a pass (or they are catch-armed) -> receivePass;
 //   enemies: unblockable ? no catch : victim.combat.tryResolveCatch(ball, point, impactTime); caught -> stop;
@@ -22,7 +26,8 @@
 import * as THREE from 'three';
 import { game } from '../game.js';
 import { EV } from '../core/events.js';
-import { BALL_RADIUS, GRAVITY, MS_TO_KMH } from '../core/constants.js';
+import { BALL_RADIUS, GRAVITY, MS_TO_KMH, TEAM } from '../core/constants.js';
+import { regionDistanceXZ } from '../world/courtMath.js';
 import { RewindHistory } from '../gameplay/history.js';
 import { HitResolver, bodyRadiusOf, bodyHeightOf, chestOf, isTargetable } from './throwSolver.js';
 import {
@@ -64,7 +69,7 @@ export const BALL_PHYS = Object.freeze({
   maxStretch: 1.14,
   footRestitution: 0.3,          // a loose ball bumping off legs
   maxPickupSpeed: 12,            // m/s: faster loose balls cannot be grabbed
-  pickupZoneReach: 0.55,         // m beyond a player's movement confinement a ball may be grabbed (to the line)
+  pickupZoneReach: 0.55,         // m beyond a player's movement confinement a ball may be grabbed (to the line), hole-aware
   catchReach: 0.85,              // m: default hands reach around the chest (Combat profile.catchRadius wins)
 });
 
@@ -107,7 +112,8 @@ const _warned = new Set();
 let _zoneCourt = null;
 const _zoneCache = [[null, null], [null, null]];
 /**
- * Confinement bounds {minX,maxX,minZ,maxZ} of `team` in `zone` (cached), or null without a court / team.
+ * Confinement region {minX,maxX,minZ,maxZ,hole} of `team` in `zone` (cached; the U outfield keeps its hole), or null
+ * without a court / team.
  * @param {number} team TEAM.HOME | TEAM.AWAY
  * @param {string} zone 'infield' | 'outfield'
  */
@@ -155,6 +161,11 @@ export class Ball {
     /** Consecutive catch-and-rethrows without touching the floor (Rally Boost). */
     this.rallyCount = 0;
     this.isPass = false;
+    /** Awarded-ball reservation: only `reservedTeam` may pick it up until scaled time `reservedUntil`. */
+    this.reservedTeam = TEAM.NONE;
+    this.reservedUntil = 0;
+    /** Team whose gadget stores the ball (Screws' turret hopper) - the possession clock treats it as held. */
+    this.custodyTeam = TEAM.NONE;
     this.unblockable = false;
     this.pierce = false;
     this.isCounter = false;
@@ -255,6 +266,7 @@ export class Ball {
     if (this.state === BALL_STATE.LIVE || this.state === BALL_STATE.STASIS) this._endLive('relaunch');
     this.root.visible = true;
     this.state = BALL_STATE.LIVE;
+    this.custodyTeam = TEAM.NONE;
     this.lastThrower = params.thrower || null;
     this.rallyCount = Math.max(0, params.rallyCount | 0);
     this.isPass = !!params.isPass;
@@ -300,6 +312,8 @@ export class Ball {
     if (this.state === BALL_STATE.LIVE || this.state === BALL_STATE.STASIS) this._endLive('held');
     this.root.visible = true;
     this.state = BALL_STATE.HELD;
+    this.clearReservation();
+    this.custodyTeam = TEAM.NONE;
     this.holder = holder;
     this.lastHolder = holder;
     this.velocity.set(0, 0, 0);
@@ -417,6 +431,7 @@ export class Ball {
     this.radius = BALL_RADIUS;
     this.lastThrower = null;
     this.lockedTarget = null;
+    this.custodyTeam = TEAM.NONE; // (the award reservation survives: resetTo is how an awarded ball reappears)
     this.grounded = this.position.y <= floorY + BALL_RADIUS + 1e-3;
     this._fade = 0;
     this._unreachableTime = 0;
@@ -445,23 +460,34 @@ export class Ball {
     this.trail.setStyle(s);
   }
 
-  /** May `p` pick this ball up right now? */
+  /**
+   * May `p` pick this ball up right now? A loose ball (or one hovering in Chrono's stasis - snatching it ends the
+   * stasis) within pickupZoneReach of p's zone region (hole-aware: an outfielder cannot reach into the enemy half),
+   * not reserved for the other team.
+   */
   canBePickedUpBy(p) {
-    if (!p || this.state !== BALL_STATE.FREE || this._fade > 0 || this._awaitLaunch > 0) return false;
+    if (!p || (this.state !== BALL_STATE.FREE && this.state !== BALL_STATE.STASIS) || this._fade > 0 || this._awaitLaunch > 0) return false;
     const c = p.combat;
     if (c && (c.hasBall || (c._pickupLockUntil > game.time.now))) return false;
     if (p.canAct === false) return false;
     if (p.health && p.health.isAlive === false) return false;
     if (this.velocity.lengthSq() > BALL_PHYS.maxPickupSpeed * BALL_PHYS.maxPickupSpeed) return false;
     // Only balls on your own side of the lines (plus arm's reach): no grabbing across the centre line or, from the
-    // outfield strip, out of the enemy court.
+    // outfield U, out of the enemy court.
     const b = zoneBounds(p.team, p.zone);
-    if (b) {
-      const m = BALL_PHYS.pickupZoneReach, q = this.position;
-      if (q.x < b.minX - m || q.x > b.maxX + m || q.z < b.minZ - m || q.z > b.maxZ + m) return false;
-    }
+    if (b && regionDistanceXZ(b, this.position.x, this.position.z) > BALL_PHYS.pickupZoneReach) return false;
+    if (this.reservedTeam >= 0 && game.time.now < this.reservedUntil && p.team !== this.reservedTeam) return false;
     return true;
   }
+
+  /** Only `team` may pick this ball up for the next `seconds` (scaled). */
+  reserve(team, seconds) {
+    this.reservedTeam = team === TEAM.HOME || team === TEAM.AWAY ? team : TEAM.NONE;
+    this.reservedUntil = game.time.now + Math.max(0, seconds || 0);
+  }
+  clearReservation() { this.reservedTeam = TEAM.NONE; this.reservedUntil = 0; }
+  /** Is the ball currently reserved for `team`? */
+  isReservedFor(team) { return this.reservedTeam >= 0 && this.reservedTeam === team && game.time.now < this.reservedUntil; }
 
   setRallyCount(n) { this.rallyCount = Math.max(0, n | 0); }
 

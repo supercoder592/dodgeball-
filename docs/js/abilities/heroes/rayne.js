@@ -2,8 +2,12 @@
 // Rayne - "Speedball" (Attacker). Web port of the Unity reference abilities (Assets/.../Abilities/Heroes/Rayne/*.cs).
 //
 //   passive   rayne.overcharge              RayneOvercharge            throw modifier: charge 2 s -> +50% speed, +20% radius
-//   skill     rayne.supersonic_meteor       RayneSupersonicMeteor      fire fastball + 3 m knockback shockwave (CD 10 s)
-//   ultimate  rayne.hyperbeam_transpierce   RayneHyperbeamTranspierce  unblockable piercing beam-ball
+//   skill     rayne.supersonic_meteor       RayneSupersonicMeteor      held ball -> fire fastball + 3 m knockback shockwave (CD 10 s)
+//   ultimate  rayne.hyperbeam_transpierce   RayneHyperbeamTranspierce  held ball -> unblockable piercing beam
+//
+// Single-ball rule: both active abilities EMPOWER the match ball Rayne is holding (requiresBall; usable from the
+// outfield too, so a starting outfielder Rayne keeps his identity). Without the ball they fail with 'requiresBall'
+// (HUD: NEED A BALL) and nothing is spent. They never conjure a second ball (shared/empowerThrow.js throwHeldBall).
 //
 // RayneSupersonicMeteor is the REFERENCE IMPLEMENTATION every other web ability follows. Anatomy of an ability:
 //   * A class extending AbilityBase, registered by roster id with registerAbility(id, cls).
@@ -18,7 +22,7 @@
 import * as THREE from 'three';
 import { game } from '../../game.js';
 import { AbilityBase, FAIL, registerAbility } from '../abilityBase.js';
-import { throwAbilityBall } from '../abilityUtil.js';
+import { throwHeldBall, holdsBall } from '../shared/empowerThrow.js';
 import { overchargeFraction, overchargeMultipliers, inCorridor, clamp01 } from '../shared/rayneMath.js';
 import { MeteorPayload, BeamPayload, FIRE_COLOR, BEAM_COLOR } from '../shared/raynePayloads.js';
 
@@ -60,6 +64,14 @@ function countEnemiesAround(owner, target, radius) {
   return n;
 }
 
+/** Past the painted outer boundary of the U outfields (|x| > outerHalfW or |z| > outerHalfL)? */
+function beyondOuterLine(pos) {
+  const c = game.court;
+  if (!c || !pos) return false;
+  const hw = c.outerHalfW ?? c.halfW + 2.5, hl = c.outerHalfL ?? c.halfL + (c.outfieldDepth || 3);
+  return Math.abs(pos.x) > hw || Math.abs(pos.z) > hl;
+}
+
 // ===============================================================================================================
 // Passive - Overcharge
 // ===============================================================================================================
@@ -80,7 +92,7 @@ export class RayneOvercharge extends AbilityBase {
     fullTime: 2,               // s of charging for the full bonus (spec: 2 s)
     maxSpeedBonus: 0.5,        // +50% at full overcharge
     maxRadiusBonus: 0.2,       // +20% at full overcharge
-    applyToAbilityThrows: false, // conjured ability balls do not benefit (Overcharge rewards holding a real throw)
+    applyToAbilityThrows: false, // empowered ability throws do not stack with it (Overcharge rewards holding a real throw)
     heatColor: 0xff8529,
     glowScale: 0.35,
     releaseShake: 0.2,         // camera shake amplitude on a fully overcharged release
@@ -216,9 +228,10 @@ export class RayneOvercharge extends AbilityBase {
  * Rayne's skill [Supersonic Meteor]: "fire-infused fastball; on impact a 3 m AOE shockwave knocks back nearby enemies
  * (CD 10 s)".
  *
- *   tryActivate ─► (castTime > 0) onCastStarted: fire gathers in Rayne's throwing hand
- *               ─► onCast: conjure the meteor (style 'meteor', x1.6 speed, 0.3 gravity) with throwAbilityBall at the
- *                          soft-lock target, carrying a MeteorPayload; holdActive()
+ *   tryActivate ─► requires the match ball in Rayne's hand (roster requiresBall; FAIL.REQUIRES_BALL otherwise)
+ *               ─► (castTime > 0) onCastStarted: fire gathers in Rayne's throwing hand
+ *               ─► onCast: the HELD ball is thrown as the meteor (style 'meteor', x1.6 speed, 0.3 gravity) with
+ *                          throwHeldBall at the soft-lock target, carrying a MeteorPayload; holdActive()
  *               ─► onTick: wait until the payload resolves (hit / surface / catch / obstacle) or `resolveTimeout` (3 s);
  *                          a meteor that burst against a wall is spent and dropped instead of ricocheting on
  *               ─► endAbility() ─► cooldown (roster: 10 s)
@@ -227,9 +240,9 @@ export class RayneOvercharge extends AbilityBase {
  *                  still resolved normally by Combat (damage, catch rules, juice pipeline). A clean catch smothers the
  *                  fire: no shockwave - the enemy's counter-play.
  *
- * Because the meteor is launched through the regular throw pipeline it inherits everything a real throw has: throw
- * modifiers (e.g. a perfect-catch counter boost), lead targeting, the 220 km/h cap and a BallThrown event for the HUD,
- * AI dodging and Danger Sense.
+ * Because the meteor is the match ball launched through the regular throw pipeline it inherits everything a real throw
+ * has: throw modifiers (e.g. a perfect-catch counter boost), lead targeting, its rally count and the 220 km/h cap, and a
+ * BallThrown event (HUD, AI dodging, Danger Sense, possession clock release). Ball._endLive restores the plain look.
  */
 export class RayneSupersonicMeteor extends AbilityBase {
   static defaults = {
@@ -271,9 +284,10 @@ export class RayneSupersonicMeteor extends AbilityBase {
   /** Payload of the tracked meteor (null when none). */
   get activePayload() { return this._payload; }
 
-  /** The meteor is a conjured projectile: without a BallManager / Combat there is nothing to throw. */
+  /** The meteor IS the held match ball: without it there is nothing to empower. */
   canActivateCustom() {
     if (!game.balls || !this.owner.combat) return FAIL.CUSTOM;
+    if (!holdsBall(this.owner)) return FAIL.REQUIRES_BALL;
     return null;
   }
 
@@ -284,7 +298,7 @@ export class RayneSupersonicMeteor extends AbilityBase {
     game.audio?.play?.('abilityCast', handPosition(this.owner, _hand), 0.9, 1.05);
   }
 
-  /** SPEC HOOK: conjure and launch the meteor. */
+  /** SPEC HOOK: throw the held ball as the meteor. */
   onCast() {
     this._stopWindup();
     const P = this.params;
@@ -307,13 +321,14 @@ export class RayneSupersonicMeteor extends AbilityBase {
     }, this);
 
     // Target stays null: the throw pipeline uses the thrower's soft-lock target (or the raw aim).
-    this._ball = throwAbilityBall(this.owner, {
+    this._ball = throwHeldBall(this.owner, {
       style: 'meteor', speedMul: P.speedMul, gravityScale: P.gravityScale, radiusMul: P.radiusMul, payload: this._payload,
     });
     if (!this._ball) {
-      // No BallManager / pool exhausted: fail gracefully, the cooldown still applies (the input was consumed).
+      // The ball left Rayne's hand during the wind-up (stun, steal...): nothing was thrown - refund the cooldown.
       this._payload = null;
       this.endAbility();
+      this.resetCooldown();
       return;
     }
     // Some combat builds only call onLaunched for regular throws: make sure the trail is attached exactly once.
@@ -323,9 +338,8 @@ export class RayneSupersonicMeteor extends AbilityBase {
     this._trackedFor = 0;
     this.holdActive();
 
-    // Release feedback for the thrower: throw animation, heavy release sound, small recoil shake.
-    flightDirection(this._ball, this.owner, _dir);
-    this.owner.avatar?.playThrow?.(_dir);
+    // Release feedback for the thrower (Combat.launchBall already played the throw animation): heavy release sound,
+    // small recoil shake.
     const origin = this._ball.position || handPosition(this.owner, _hand);
     game.audio?.play?.('throwHeavy', origin, 1, 0.95);
     game.juice?.shake?.(P.shakeAmplitude * 0.3, P.shakeFrequency, 0.15, origin);
@@ -347,7 +361,7 @@ export class RayneSupersonicMeteor extends AbilityBase {
         // The flight ended without a callback we saw (e.g. an obstacle absorbed it): let the payload decide.
         p.onEnded(b);
       } else if (!ours) {
-        // The pooled ability ball was recycled into another projectile: our flight is long over.
+        // The match ball was re-thrown with another payload (or reset): our flight is long over.
         p.finish();
       }
     }
@@ -370,12 +384,12 @@ export class RayneSupersonicMeteor extends AbilityBase {
   onUnequip() { this._stopWindup(); }
 
   /**
-   * AI utility: worth it with an enemy in range and not while a ball is about to hit Rayne (dodge/catch first).
+   * AI utility: only with the ball in hand (it IS the throw), with an enemy in range.
    * The AOE makes it much more valuable against clustered enemies (each extra enemy within the shockwave radius of the
    * likely target adds utility); slightly less attractive at long range where the target has time to react.
    */
   evaluateAI(ctx) {
-    if (!ctx || !ctx.self || !ctx.nearestEnemy) return 0;
+    if (!ctx || !ctx.self || !ctx.nearestEnemy || !ctx.holdingBall) return 0;
     const P = this.params;
     if (ctx.nearestEnemyDistance > P.aiMaxRange) return 0;
     if (ctx.incomingBall && ctx.incomingTime < 0.45) return 0;
@@ -397,9 +411,12 @@ export class RayneSupersonicMeteor extends AbilityBase {
 
 /**
  * Rayne's ultimate [Hyperbeam Transpierce]: "unblockable beam-ball that penetrates all enemies in its path".
- * Conjures a 'beam' ability ball: unblockable (ignores shields, evasion and catches), pierce (keeps flying after each
+ * Throws the HELD match ball as a 'beam' (requiresBall; the meter is refunded if the ball is gone at release):
+ * unblockable (ignores shields, evasion and catches), pierce (keeps flying after each
  * enemy it hits), x2.2 speed (still capped at 220 km/h), zero gravity (laser-straight) and x1.3 radius. A BeamPayload
- * adds the beam trail and heavy juice on every pierce. Stays Active until the beam grounds out (wall/floor) or a timeout.
+ * adds the beam trail and heavy juice on every pierce. Stays Active until the beam grounds out (wall/floor, or once it
+ * passes the outer outfield boundary - so the only ball drops into the run-off instead of leaving the arena) or a
+ * timeout.
  */
 export class RayneHyperbeamTranspierce extends AbilityBase {
   static defaults = {
@@ -431,6 +448,7 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
 
   canActivateCustom() {
     if (!game.balls || !this.owner.combat) return FAIL.CUSTOM;
+    if (!holdsBall(this.owner)) return FAIL.REQUIRES_BALL;
     return null;
   }
 
@@ -449,12 +467,14 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
       knockback: P.knockback, hitstop: P.heavyHitstop, shakeAmplitude: P.shakeAmplitude, shakeFrequency: P.shakeFrequency,
       shakeDuration: P.shakeDuration, color: P.beamColor, trailScale: P.trailScale, trailDuration: P.resolveTimeout + 0.5,
     });
-    this._ball = throwAbilityBall(this.owner, {
+    this._ball = throwHeldBall(this.owner, {
       style: 'beam', speedMul: P.speedMul, radiusMul: P.radiusMul, gravityScale: P.gravityScale,
       unblockable: true, pierce: true, payload: this._payload,
     });
     if (!this._ball) {
+      // The ball left Rayne's hand during the charge-up: give the meter back (tryActivate consumed it).
       this._payload = null;
+      this.owner.abilities?.addUltimateCharge?.(this.def.ultCost ?? 1, 'refund');
       this.endAbility();
       return;
     }
@@ -465,7 +485,6 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
     // Release: muzzle flash at the hand, recoil through Rayne's body, heavy rumble, screen pulse for the caster.
     flightDirection(this._ball, this.owner, _dir);
     const origin = this._ball.position || handPosition(this.owner, _hand);
-    this.owner.avatar?.playThrow?.(_dir);
     game.vfx?.play?.('hit', origin, { scale: 0.7, color: P.beamColor, direction: _dir });
     game.audio?.play?.('beamRelease', origin, 1, 0.8);
     if (this.owner.isLocal) game.renderer?.pulse?.('ultimate', 0.8, 0.4);
@@ -482,8 +501,11 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
     if (p && b && !p.resolved) {
       const carries = b.payload === p;
       const ours = carries || b.payload == null; // see RayneSupersonicMeteor.onTick
-      // The beam grounds out on the first wall/floor it strikes: it never ricochets back through players.
-      if (carries && p.hasHitSurface && b.state === 'live') b.makeFree?.(_vel.copy(b.velocity).multiplyScalar(0.1), true);
+      // The beam grounds out on the first wall/floor it strikes - or past the outer outfield line - so the only ball
+      // never ricochets back through players nor leaves the arena (which would award it to the enemy).
+      if (carries && b.state === 'live' && (p.hasHitSurface || beyondOuterLine(b.position))) {
+        b.makeFree?.(_vel.copy(b.velocity).multiplyScalar(0.1), true);
+      }
       else if ((ours && b.state !== 'live' && b.state !== 'stasis') || !ours) p.finish();
     }
     if (!p || p.resolved || this._trackedFor >= this.params.resolveTimeout) this.endAbility();
@@ -505,7 +527,7 @@ export class RayneHyperbeamTranspierce extends AbilityBase {
    * enemies line up behind the target (counted inside a corridor along the throw line). Never die with a full meter.
    */
   evaluateAI(ctx) {
-    if (!ctx || !ctx.self || !ctx.nearestEnemy) return 0;
+    if (!ctx || !ctx.self || !ctx.nearestEnemy || !ctx.holdingBall) return 0;
     const P = this.params;
     if (ctx.nearestEnemyDistance > P.aiMaxRange) return 0;
     if (ctx.incomingBall && ctx.incomingTime < 0.35) return 0;

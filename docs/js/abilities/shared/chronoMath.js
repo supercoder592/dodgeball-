@@ -26,10 +26,13 @@ export function insideZone(p, center, size, height, below = 1) {
 }
 
 /**
- * Bounds { minX, maxX, minZ, maxZ } of the whole playing area (both infield halves + both outfield strips, which are
- * `outfieldMargin` wider than the court) for a court-like object { width, length, outfieldDepth }.
+ * Bounds { minX, maxX, minZ, maxZ } of the whole playing area (both infield halves + the U outfields around them,
+ * `outfieldMargin` - or the court's sideOutfieldWidth - wider than the court on each side and outfieldDepth deep behind
+ * each baseline) for a court-like object { width, length, outfieldDepth, sideOutfieldWidth? }.
  */
 export function playAreaBounds(court, outfieldMargin = 1.5) {
+  // The U outfields run along both sidelines: use the court's real side-band width when it has one.
+  if (court && Number.isFinite(court.sideOutfieldWidth)) outfieldMargin = court.sideOutfieldWidth;
   const halfW = (court && court.width ? court.width : 9) / 2;
   const halfL = (court && court.length ? court.length : 18) / 2;
   const depth = court && court.outfieldDepth != null ? court.outfieldDepth : 3;

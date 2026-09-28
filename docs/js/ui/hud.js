@@ -1,8 +1,10 @@
 // ---------------------------------------------------------------------------------------------------------------
 // HUD (system, ORDER.HUD, lateUpdate after the camera): broadcast-style DOM overlay in #ui.
-//   top      : scoreboard (round wins, infield pips, clock, round), kill feed, mini-map, LIVE tag (spectating)
+//   top      : scoreboard (round wins, player pips incl. the starting outfielder, clock, round, possession shot
+//              clock + ball-possession dot), kill feed, mini-map, LIVE tag (spectating)
 //   centre   : crosshair + hit marker, charge bar (Rayne's overcharge segment), catch timing feedback, lock marker
-//              projected over combat.currentTarget, countdown numbers, banners, toasts, Danger Sense red edges
+//              projected over combat.currentTarget, pass-receiver marker, off-screen ball pointer, local 3-2-1
+//              possession countdown, round countdown numbers, banners (serve, time violation), toasts, Danger Sense
 //   bottom   : player card (portrait, HP with 'PENDING' delayed elimination, ultimate meter, status chips, zone),
 //              skill / ultimate radial cooldowns with key hints, last throw km/h + rally, pickup prompt,
 //              spectator overlay, click-to-play hint, match results panel
@@ -17,7 +19,7 @@ import {
   formatClock, formatCooldown, cssColor, chargeModel, STATUS_LABELS, STATUS_TYPES, failLabel, causeLabel, TEAM_LABELS, clamp01,
 } from './format.js';
 import { Settings } from '../input/settings.js';
-import { Minimap } from './minimap.js';
+import { Minimap, hiddenOnMinimap } from './minimap.js';
 import { portraitUrl } from './heroSelect.js';
 import { restartMatch, backToHeroSelect } from './flow.js';
 
@@ -47,6 +49,9 @@ export const HUD_TUNING = Object.freeze({
   lowHp: 0.35,
   lowTime: 10,              // s left on the clock that turns it red
   failToastCooldown: 0.6,
+  shotClockWarn: 3,         // s left on the possession clock that turns the bar red / shows the local 3-2-1
+  ballPointerMargin: 30,    // px from the screen edge for the off-screen ball arrow
+  passMarkerLift: 2.05,     // m above the receiver's feet for the pass marker
 });
 
 const GOLD = '#ffc940';
@@ -82,9 +87,13 @@ function setVarStr(el, name, v) { if (!el) return; const c = cacheOf(el); if (c[
 /** Restarts a CSS animation class. */
 function replay(el, cls) { if (!el) return; el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
 
-const FREE_BALL = (b) => !!b && b.state === 'free';
+// Pickup prompt filter: a loose ball the local player may legally take (zone / reservation rules), no closure per scan.
+let _pickupFor = null;
+const PICKUP_BALL = (b) => !!b && (b.state === 'free' || b.state === 'stasis')
+  && (!_pickupFor || typeof b.canBePickedUpBy !== 'function' || b.canBePickedUpBy(_pickupFor));
 const _proj = new THREE.Vector3();
 const _cam = new THREE.Vector3();
+const _zoneOut = { team: TEAM.NONE, zone: ZONE.INFIELD };
 
 export class Hud {
   constructor() {
@@ -124,6 +133,9 @@ export class Hud {
     this._vh = typeof innerHeight === 'number' ? innerHeight : 720;
     this._onResize = () => { this._vw = innerWidth; this._vh = innerHeight; };
     this.minimap = null;
+    this._shotKey = -2; this._shotTeam = -2; this._scKey = -1; this._hasBallTeam = -2;
+    this._ptTarget = null; this._ptX = -1e4; this._ptY = -1e4;
+    this._bpX = -1e4; this._bpY = -1e4; this._bpA = 1e4;
   }
 
   async init() {
@@ -134,6 +146,10 @@ export class Hud {
     on(EV.MatchPhase, (e) => this._onPhase(e));
     on(EV.RoundCountdown, (e) => this._onCountdown(e));
     on(EV.RoundStarted, () => { this._hideCountdown(); this.banner('FIGHT!\n開戰！', WHITE, 1.1); });
+    on(EV.ServeReady, (e) => this._onServeReady(e));
+    on(EV.PossessionWarning, (e) => this._onPossessionWarning(e));
+    on(EV.PossessionViolation, (e) => this._onPossessionViolation(e));
+    on(EV.BallAwarded, (e) => this._onBallAwarded(e));
     on(EV.RoundEnded, (e) => this._onRoundEnded(e));
     on(EV.MatchEnded, (e) => this._onMatchEnded(e));
     on(EV.PlayerEliminated, (e) => this._onEliminated(e));
@@ -215,6 +231,9 @@ export class Hud {
     this._updateAbilities(local);
     this._updateCenter(local);
     this._updateLock(local);
+    this._updatePassMarker(local);
+    this._updateBallPointer(local);
+    this._updateShotClock(match, local);
     this._updateDanger(realDt);
     this._updateSpectate(local);
     this._updateHints(local, phase);
@@ -241,7 +260,7 @@ export class Hud {
       <div class="hud-danger" aria-hidden="true"><i class="dg-l"></i><i class="dg-r"></i><i class="dg-t"></i><i class="dg-b"></i></div>
       <div class="sb">
         <div class="sb-team sb-home"><span class="sb-you">YOU 你</span><span class="sb-pips"></span><span class="sb-wins"></span><span class="sb-name">${TEAM_LABELS[0].en}<small>${TEAM_LABELS[0].zh}</small></span><span class="sb-score">0</span></div>
-        <div class="sb-center"><div class="sb-clock">0:00</div><div class="sb-round"></div></div>
+        <div class="sb-center"><div class="sb-clock">0:00</div><div class="sb-round"></div><div class="sb-shot"><i></i><b></b></div></div>
         <div class="sb-team sb-away"><span class="sb-score">0</span><span class="sb-name">${TEAM_LABELS[1].en}<small>${TEAM_LABELS[1].zh}</small></span><span class="sb-wins"></span><span class="sb-pips"></span><span class="sb-you">YOU 你</span></div>
       </div>
       <div class="hud-live"><i></i>LIVE <small>直播</small></div>
@@ -252,6 +271,9 @@ export class Hud {
       <div class="ch"><div class="ch-track"><div class="ch-base"><span></span></div><div class="ch-over"><span></span></div></div><div class="ch-label"></div></div>
       <div class="cf"><b></b><small></small></div>
       <div class="lk"><span class="lk-box"></span><span class="lk-name"></span></div>
+      <div class="pt"><span class="pt-tag">PASS ▸ <b></b> <small>傳球</small></span><i></i></div>
+      <div class="bp"><i></i></div>
+      <div class="sc"><b></b><small>THROW / PASS · 快投或傳</small></div>
       <div class="cd"></div>
       <div class="bn"><div class="bn-main"></div><div class="bn-sub"></div></div>
       <div class="pc">
@@ -293,6 +315,8 @@ export class Hud {
     e.sb = q('.sb');
     e.center = q('.sb-center');
     e.clock = q('.sb-clock');
+    e.shot = q('.sb-shot');
+    e.shotNum = q('.sb-shot b');
     e.round = q('.sb-round');
     e.team = [q('.sb-home'), q('.sb-away')];
     e.pips = [q('.sb-home .sb-pips'), q('.sb-away .sb-pips')];
@@ -310,6 +334,12 @@ export class Hud {
     e.catchSub = q('.cf small');
     e.lock = q('.lk');
     e.lockName = q('.lk-name');
+    e.pass = q('.pt');
+    e.passName = q('.pt b');
+    e.pointer = q('.bp');
+    e.sc = q('.sc');
+    e.scNum = q('.sc b');
+    e.zone = q('.pc-zone');
     e.count = q('.cd');
     e.banner = q('.bn');
     e.bannerMain = q('.bn-main');
@@ -397,6 +427,11 @@ export class Hud {
     setShown(this.el.catch, false);
     setShown(this.el.toast, false);
     setShown(this.el.lock, false);
+    setShown(this.el.pass, false);
+    setShown(this.el.pointer, false);
+    setShown(this.el.sc, false);
+    setShown(this.el.shot, false);
+    this._ptTarget = null;
     this._danger.shown = 0; this._danger.active = false; this._danger.ball = null;
     setVarNum(this.el.danger, '--dz', 0);
     this._lockTarget = null;
@@ -428,8 +463,9 @@ export class Hud {
     setClass(e.team[0], 'mine', !!local && local.team === TEAM.HOME);
     setClass(e.team[1], 'mine', !!local && local.team === TEAM.AWAY);
 
-    // Infield pips: one per player slot. 1 infield, 2 outfield, 3 down (ragdoll), 4 pending elimination.
-    const per = rules.playersPerTeam || 3;
+    // Player pips: one per player slot. 1 infield, 2 outfield (eliminated), 3 down (ragdoll), 4 pending elimination,
+    // 5 starting outfielder (元外野, ring).
+    const per = rules.playersPerTeam || 4;
     for (let t = 0; t < 2; t++) {
       const box = e.pips[t];
       if (box.childElementCount !== per) { box.innerHTML = '<i></i>'.repeat(per); this._pipState[t].length = 0; }
@@ -445,7 +481,7 @@ export class Hud {
       let st = 1;
       if (p.health && p.health.pending) st = 4;
       else if (p.fsm && p.fsm.incapReason === 'eliminated') st = 3;
-      else if (p.zone === ZONE.OUTFIELD) st = 2;
+      else if (p.zone === ZONE.OUTFIELD) st = p.isStartingOutfielder ? 5 : 2;
       if (p === local) st += 10;
       this._setPip(t, idx, st);
     }
@@ -460,7 +496,7 @@ export class Hud {
     const el = this.el.pips[t].children[i];
     if (!el) return;
     const base = st % 10;
-    el.className = `${base === 1 ? 'in' : base === 2 ? 'out' : base === 3 ? 'down' : base === 4 ? 'pending' : ''}${st >= 10 ? ' me' : ''}`;
+    el.className = `${base === 1 ? 'in' : base === 2 ? 'out' : base === 3 ? 'down' : base === 4 ? 'pending' : base === 5 ? 'ob' : ''}${st >= 10 ? ' me' : ''}`;
   }
 
   // ------------------------------------------------------------------ player card
@@ -488,6 +524,7 @@ export class Hud {
     setClass(e.card, 'low', frac > 0 && frac <= HUD_TUNING.lowHp);
     setClass(e.card, 'pending', !!(h && h.pending));
     setClass(e.card, 'outfield', local.zone === ZONE.OUTFIELD);
+    setText(e.zone, local.isStartingOutfielder ? 'OUTFIELD 外場 · 元外野' : 'OUTFIELD 外場');
     setClass(e.card, 'down', !!(local.fsm && local.fsm.incapReason === 'eliminated'));
 
     const ab = local.abilities;
@@ -659,6 +696,158 @@ export class Hud {
     }
   }
 
+  // ------------------------------------------------------------------ pass marker / ball pointer
+  /** 8 Hz: which teammate a pass would reach now (Combat.previewPassReceiver - aim cone, else nearest). */
+  _scanPassReceiver(local) {
+    const c = local && local.combat;
+    let r = null;
+    if (c && c.hasBall && typeof c.previewPassReceiver === 'function' && !(local.fsm && local.fsm.incapReason)) {
+      try { r = c.previewPassReceiver(); } catch { r = null; }
+    }
+    if (r === this._ptTarget) return;
+    this._ptTarget = r;
+    if (r) {
+      setText(this.el.passName, nameOf(r));
+      setVarStr(this.el.pass, '--pc', teamCss(r.team));
+      replay(this.el.pass, 'acquire');
+    }
+  }
+
+  /** Chevron over the pass receiver (clamped to the screen edge when off-screen). */
+  _updatePassMarker(local) {
+    const e = this.el;
+    const r = this._ptTarget;
+    const cam = game.camera;
+    if (!r || !cam || !r.position || !local || !local.combat || !local.combat.hasBall) { setShown(e.pass, false); return; }
+    cam.updateMatrixWorld();
+    _proj.copy(r.position);
+    _proj.y += HUD_TUNING.passMarkerLift;
+    _proj.project(cam);
+    const behind = _proj.z > 1;
+    let x = (_proj.x * 0.5 + 0.5) * this._vw;
+    let y = (0.5 - _proj.y * 0.5) * this._vh;
+    if (behind) { x = this._vw - x; y = this._vh - 60; }
+    const m = 40;
+    const off = behind || x < m || x > this._vw - m || y < m || y > this._vh - m;
+    x = Math.min(this._vw - m, Math.max(m, x));
+    y = Math.min(this._vh - m, Math.max(m, y));
+    setShown(e.pass, true);
+    setClass(e.pass, 'offscreen', off);
+    if (Math.abs(x - this._ptX) >= 0.5 || Math.abs(y - this._ptY) >= 0.5) {
+      this._ptX = x; this._ptY = y;
+      e.pass.style.transform = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0)`;
+    }
+  }
+
+  /**
+   * Edge arrow toward the single ball when it is off-screen (phones: the action is often out of view). Coloured by
+   * the holder's team (white when loose); pulses while an enemy holder winds up. A cloaked enemy holder is not given
+   * away.
+   */
+  _updateBallPointer(local) {
+    const e = this.el;
+    const cam = game.camera;
+    const ball = game.balls && game.balls.ball;
+    const m = game.match;
+    let show = !!(local && cam && ball && ball.position && m && m.isPlaying && ball.state !== 'despawned');
+    const holder = show && ball.state === 'held' ? ball.holder : null;
+    if (holder && (holder === local || (game.areEnemies(local, holder) && holder.status
+      && typeof holder.status.has === 'function' && holder.status.has('cloaked') && !holder.status.has('revealed')))) show = false;
+    if (!show) { setShown(e.pointer, false); return; }
+    cam.updateMatrixWorld();
+    _proj.copy(holder ? (holder.chestPosition || holder.position) : ball.position).project(cam);
+    const behind = _proj.z > 1;
+    const hw = this._vw / 2, hh = this._vh / 2, mg = HUD_TUNING.ballPointerMargin;
+    let dx = _proj.x * hw, dy = -_proj.y * hh;
+    if (!behind && Math.abs(dx) < hw - mg * 0.5 && Math.abs(dy) < hh - mg * 0.5) { setShown(e.pointer, false); return; }
+    if (behind) { dx = -dx; dy = -dy; if (Math.abs(dx) + Math.abs(dy) < 1) dy = hh; }
+    const t = Math.min((hw - mg) / Math.max(1e-3, Math.abs(dx)), (hh - mg) / Math.max(1e-3, Math.abs(dy)));
+    const x = hw + dx * t, y = hh + dy * t, a = Math.atan2(dy, dx);
+    setShown(e.pointer, true);
+    setVarStr(e.pointer, '--bc', holder ? teamCss(holder.team) : WHITE);
+    setClass(e.pointer, 'charging', !!(holder && game.areEnemies(local, holder) && holder.combat && holder.combat.isCharging));
+    if (Math.abs(x - this._bpX) >= 0.5 || Math.abs(y - this._bpY) >= 0.5 || Math.abs(a - this._bpA) >= 0.02) {
+      this._bpX = x; this._bpY = y; this._bpA = a;
+      e.pointer.style.transform = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0) rotate(${a.toFixed(3)}rad)`;
+    }
+  }
+
+  // ------------------------------------------------------------------ possession shot clock
+  /**
+   * Scoreboard shot-clock bar (possessing team colour, remaining / limit, tenths in the last 3 s), the possession dot
+   * on the team name, and the big local 3-2-1 when the local player holds the ball or owns the dead ball.
+   */
+  _updateShotClock(match, local) {
+    const e = this.el;
+    const pos = match.possession;
+    const on = !!pos && match.phase === 'playing' && pos.limit > 0 && (pos.team === TEAM.HOME || pos.team === TEAM.AWAY);
+    const team = on ? pos.team : TEAM.NONE;
+    if (team !== this._hasBallTeam) {
+      this._hasBallTeam = team;
+      setClass(e.team[0], 'has-ball', team === TEAM.HOME);
+      setClass(e.team[1], 'has-ball', team === TEAM.AWAY);
+    }
+    setShown(e.shot, on);
+    if (!on) { this._shotKey = -2; this._scKey = -1; setShown(e.sc, false); return; } // -2: rewrite the text when shown again
+    if (team !== this._shotTeam) { this._shotTeam = team; setVarStr(e.shot, '--st', teamCss(team)); }
+    const rem = Math.max(0, Number.isFinite(pos.remaining) ? pos.remaining : pos.limit);
+    const warn = rem <= HUD_TUNING.shotClockWarn;
+    setVarNum(e.shot, '--p', clamp01(rem / pos.limit), 100);
+    const key = warn ? Math.ceil(rem * 10) : -1;
+    if (key !== this._shotKey) { this._shotKey = key; setText(e.shotNum, warn ? `HOLD ${rem.toFixed(1)} 持球` : ''); }
+    setClass(e.shot, 'warn', warn);
+    setClass(e.shot, 'paused', !pos.running);
+    // Local countdown: my hands, or a dead ball resting in my own zone.
+    let mine = false;
+    if (local && local.team === team && warn && rem > 0) {
+      if (pos.holder === local) mine = true;
+      else if (pos.deadBall && !pos.holder && game.court && game.balls && game.balls.ball) {
+        const z = game.court.zoneAt(game.balls.ball.position, _zoneOut);
+        mine = !!z && z.team === local.team && z.zone === local.zone;
+      }
+    }
+    setShown(e.sc, mine);
+    const n = mine ? Math.max(1, Math.ceil(rem)) : -1;
+    if (n !== this._scKey) { this._scKey = n; if (n > 0) setText(e.scNum, String(n)); }
+  }
+
+  _onPossessionWarning(ev) {
+    const local = game.localPlayer;
+    if (!ev || !local || ev.team !== local.team) return;
+    replay(this.el.sc, 'pop');
+  }
+
+  _onPossessionViolation(ev) {
+    if (!ev) return;
+    const local = game.localPlayer;
+    const to = ev.awardedTo;
+    const L = TEAM_LABELS[to] || { en: '', zh: '' };
+    const color = local ? (ev.team === local.team ? RED : GOLD) : teamCss(to);
+    this.banner(`TIME VIOLATION\n持球超時 · 球權交給 ${L.en} ${L.zh}`, color, 1.7);
+  }
+
+  _onServeReady(ev) {
+    if (!ev) return;
+    const local = game.localPlayer;
+    const t = ev.team;
+    const L = TEAM_LABELS[t];
+    if (!L) return;
+    const lim = (game.match && game.match.rules && game.match.rules.possessionLimit) || 0;
+    if (local && ev.player === local) {
+      this.banner(`YOUR SERVE\n你發球${lim > 0 ? ` · ${lim} 秒內投出或傳球` : ''}`, teamCss(t), 1.9);
+    } else {
+      this.banner(`${L.en} SERVES\n${L.en} 發球 · ${L.zh}持球開球`, teamCss(t), 1.6);
+    }
+  }
+
+  _onBallAwarded(ev) {
+    if (!ev) return;
+    if (this.minimap) this.minimap.setAward(ev);
+    const L = TEAM_LABELS[ev.team];
+    if (ev.cause === 'outOfArena') this.toast(`OUT OF PLAY · 出界 — ${L ? `${L.en} BALL ${L.zh}球權` : ''}`, teamCss(ev.team), 2);
+    else if (ev.cause === 'vanish') this.toast('VANISHED · 球被變走了', '#c9a7ff', 1.8);
+  }
+
   // ------------------------------------------------------------------ Danger Sense
   _onDanger(ev) {
     if (!ev || ev.player !== game.localPlayer) return;
@@ -752,6 +941,7 @@ export class Hud {
     if (this._scanT <= 0) {
       this._scanT = HUD_TUNING.scanInterval;
       this._scanPickup(local);
+      this._scanPassReceiver(local);
       if (this._lockTarget && local) {
         const d = Math.round(this._lockTarget.position.distanceTo(local.position) * 2) / 2;
         if (d !== this._lockDist) { this._lockDist = d; setText(e.lockName, `${nameOf(this._lockTarget)}  ${d.toFixed(1)} m`); }
@@ -786,8 +976,10 @@ export class Hud {
       const r = (combat.profile && combat.profile.manualPickupRadius) || 1.6;
       let ball = null;
       try {
-        if (typeof game.balls.findNearest === 'function') ball = game.balls.findNearest(local.position, FREE_BALL, r);
+        _pickupFor = local;
+        if (typeof game.balls.findNearest === 'function') ball = game.balls.findNearest(local.position, PICKUP_BALL, r);
       } catch { ball = null; }
+      _pickupFor = null;
       show = !!ball;
     }
     if (show) {
@@ -826,6 +1018,9 @@ export class Hud {
     this._kills.length = 0;
     this._scoreKey = -1; this._round = -1; this._clockKey = -1;
     this._pipState[0].length = 0; this._pipState[1].length = 0;
+    this._shotKey = -2; this._shotTeam = -2; this._scKey = -1; this._hasBallTeam = -2;
+    this._ptTarget = null;
+    if (this.minimap) this.minimap.setAward(null);
     this._cardPlayer = null;
     this._specTarget = undefined;
     setClass(this.el.lastThrow, 'is-on', false);
@@ -995,6 +1190,14 @@ export class Hud {
     const local = game.localPlayer;
     const q = ev.quality;
     const secs = Number.isFinite(ev.secondsBeforeImpact) ? ev.secondsBeforeImpact : 0;
+    if (ev.intercepted) {
+      // Enemy pass caught: possession only (no revive / ult / counter boost).
+      const c = ev.catcher;
+      if (c && c === local) this._catchFeedback('normal', 'INTERCEPT', '攔截 · 搶到球權');
+      else if (local && ev.thrower && ev.thrower.team === local.team) this.toast('PASS INTERCEPTED · 傳球被攔截', RED, 1.6);
+      if (c) this._feed(`<i class="kf-int">✋</i><span class="kf-v" style="color:${teamCss(c.team)}">${esc(nameOf(c))}</span><small>INTERCEPTED · 攔截</small>`, teamCss(c.team), c === local);
+      return;
+    }
     if (ev.catcher && ev.catcher === local) {
       if (q === 'perfect') {
         this._catchFeedback('perfect', 'PERFECT CATCH!', `${secs.toFixed(2)} s · 完美接球`);

@@ -3,7 +3,7 @@
 // Match (match.js) snapshots its players into plain objects and asks these functions who is still "in", who won the
 // round, how the score changes, who gets revived first and where a returning player should stand.
 // ---------------------------------------------------------------------------------------------------------------
-import { TEAM } from '../core/constants.js';
+import { TEAM, opponent } from '../core/constants.js';
 
 /** RoundEnded `reason` values (see core/events.js). */
 export const ROUND_END_REASON = Object.freeze({ ELIMINATED: 'eliminated', TIME: 'time', DRAW: 'draw' });
@@ -139,4 +139,100 @@ export function countdownNumber(elapsed, total) {
   const left = total - elapsed;
   if (left <= 0) return 0;
   return Math.min(Math.ceil(total - 1e-9), Math.ceil(left - 1e-9));
+}
+
+// =============================================================================================================
+// Single-ball rules: serve order, starting outfielders, possession clock, award receiver
+// =============================================================================================================
+
+/**
+ * Team that serves round `round` (1-based): round 1 by coin (coin < 0.5 -> HOME); after a won round the LOSER
+ * serves; after a draw / replay the team that did not serve last time.
+ * @param {number} round
+ * @param {number} lastRoundWinner TEAM or NO_WINNER
+ * @param {number} lastServeTeam TEAM of the previous serve (TEAM.NONE before the first)
+ * @param {number} coin uniform [0, 1) (seeded rng)
+ */
+export function nextServeTeam(round, lastRoundWinner, lastServeTeam, coin) {
+  if (round <= 1 || (lastServeTeam !== TEAM.HOME && lastServeTeam !== TEAM.AWAY &&
+      lastRoundWinner !== TEAM.HOME && lastRoundWinner !== TEAM.AWAY)) {
+    return coin < 0.5 ? TEAM.HOME : TEAM.AWAY;
+  }
+  if (lastRoundWinner === TEAM.HOME || lastRoundWinner === TEAM.AWAY) return opponent(lastRoundWinner);
+  return opponent(lastServeTeam);
+}
+
+/**
+ * Slots that start the round in the outfield (元外野): the highest `count` slots that are not the local human
+ * (the human always starts in the infield). Returned highest first.
+ * @param {Array<{slot:number, isLocal?:boolean}>} lineup
+ * @param {number} count
+ * @returns {number[]}
+ */
+export function pickStartingOutfielders(lineup, count) {
+  const n = Math.max(0, count | 0);
+  if (!n || !Array.isArray(lineup)) return [];
+  const slots = [];
+  for (const e of lineup) if (e && !e.isLocal) slots.push(e.slot | 0);
+  slots.sort((a, b) => b - a);
+  return slots.slice(0, Math.min(n, Math.max(0, lineup.length - 1)));
+}
+
+/** A fresh possession clock ({ team, elapsed, lastWarn, changed }). */
+export function makePossessionClock() {
+  return { team: TEAM.NONE, elapsed: 0, lastWarn: 99, changed: false };
+}
+
+/**
+ * Advances the anti-stall possession clock by one frame.
+ *  - ownerTeam set and different from clock.team: the clock switches to it (elapsed 0, warnings re-armed) and
+ *    clock.changed is set for this call (the caller emits PossessionChanged).
+ *  - ownerTeam NONE: nobody owns the ball this frame (in flight, hidden): the clock pauses.
+ *  - running and owners match: elapsed += dt. Returns the warning number (<= warnAt) once per newly crossed second,
+ *    -1 once the limit is reached, else 0. limit <= 0 disables the clock (always 0).
+ * @param {{team:number, elapsed:number, lastWarn:number, changed:boolean}} clock
+ * @returns {number} 0 | warnAt..1 | -1
+ */
+export function stepPossession(clock, ownerTeam, running, dt, limit, warnAt = 3) {
+  clock.changed = false;
+  const owned = ownerTeam === TEAM.HOME || ownerTeam === TEAM.AWAY;
+  if (owned && ownerTeam !== clock.team) {
+    clock.team = ownerTeam;
+    clock.elapsed = 0;
+    clock.lastWarn = 99;
+    clock.changed = true;
+  }
+  if (!owned || !running || !(limit > 0)) return 0;
+  clock.elapsed += Math.max(0, dt || 0);
+  const remaining = limit - clock.elapsed;
+  if (remaining <= 0) return -1;
+  const n = Math.ceil(remaining - 1e-9);
+  if (n <= warnAt && n < clock.lastWarn) { clock.lastWarn = n; return n; }
+  return 0;
+}
+
+/** A throw / pass released the ball: nobody owns the clock until the next possession. */
+export function releasePossession(clock) {
+  clock.team = TEAM.NONE;
+  clock.elapsed = 0;
+  clock.lastWarn = 99;
+  clock.changed = false;
+  return clock;
+}
+
+/**
+ * Who receives an awarded ball: the eligible INFIELD candidate nearest (x, z), else the nearest eligible outfielder,
+ * else -1.
+ * @param {Array<{x:number, z:number, infield:boolean, eligible:boolean}>} cands
+ * @returns {number} index into cands or -1
+ */
+export function pickAwardReceiver(cands, x, z) {
+  let bestIn = -1, dIn = Infinity, bestOut = -1, dOut = Infinity;
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
+    if (!c || !c.eligible) continue;
+    const dx = c.x - x, dz = c.z - z, d = dx * dx + dz * dz;
+    if (c.infield) { if (d < dIn) { dIn = d; bestIn = i; } } else if (d < dOut) { dOut = d; bestOut = i; }
+  }
+  return bestIn >= 0 ? bestIn : bestOut;
 }

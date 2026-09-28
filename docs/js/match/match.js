@@ -1,17 +1,26 @@
 // ---------------------------------------------------------------------------------------------------------------
-// Match (system, owner: match) - 3v3 best-of-3 flow for Dodgeball Ultra (web). Contract: WEB_ARCHITECTURE.md §3.6.
+// Match (system, owner: match) - 4v4 best-of-3 flow for Dodgeball Ultra (web). Contract: WEB_ARCHITECTURE.md §3.6.
 //
-//   startMatch(setup) ─► spawn 6 Players (await init) ─► preRound ─► countdown (3,2,1) ─► playing ─► roundEnd ─┐
+//   startMatch(setup) ─► spawn 8 Players (await init) ─► preRound ─► countdown (3,2,1) ─► playing ─► roundEnd ─┐
 //                                                          ▲                                                  │
 //                                                          └──────────── next round (no match winner yet) ◄───┤
 //                                                    matchEnd (MatchEnded) ─► 6 s ─► hero select / new spectate match
 //
+// Teams: 3 INFIELD players + 1 starting OUTFIELDER (元外野) each. A team's outfield is the U around the OPPONENT's
+// half (both sideline strips + the strip behind its baseline). The starting outfielder stays out there all round:
+// never returns on a hit, is never revived by a Perfect Catch, and does not count as "in".
 // Infield / outfield (Taiwanese 內場 / 外場): an eliminated player ragdolls for rules.ragdollTime (scaled time, so
-// hitstop and pause hold the ragdoll) and is then moved to the outfield strip behind the enemy baseline, from where
-// they keep throwing. A Perfect Catch brings back the teammate who has waited the longest (reviveOneOutfield, called
-// by Combat and de-duplicated here); an outfield player who lands a hit returns to the infield. A round ends the
-// moment a team has nobody left in the infield (players whose elimination is pending - Chrono - still count), or at
-// time-up (more infield players, then more total infield HP, else a draw that scores nothing and is replayed).
+// hitstop and pause hold the ragdoll) and is then moved to the U, from where they keep throwing. A Perfect Catch
+// brings back the ELIMINATED teammate who has waited the longest (reviveOneOutfield, called by Combat and
+// de-duplicated here); an eliminated outfielder who lands a hit returns to the infield. A round ends the moment a
+// team has nobody left in the infield (players whose elimination is pending - Chrono - still count), or at time-up
+// (more infield players, then more total infield HP, else a draw that scores nothing and is replayed).
+//
+// ONE ball (rules.ballCount = 1). Every round one team serves (一方持球開球): round 1 by seeded coin, then the team
+// that lost the previous round, after a draw the team that did not serve last time; the server holds the ball
+// through preRound and the countdown. Anti-stall possession clock (rules.possessionLimit, 10 s): holding the ball -
+// or leaving it loose in your own zone (dead-ball rule) - that long without a throw or pass hands it to the
+// opponents (BallManager.awardBall). A throw / pass releases the clock; a change of owning team restarts it.
 //
 // Players are NOT game systems: Match drives them through a tiny PlayerDriver registered at ORDER.PLAYERS, so every
 // Player updates after Input/AI and before abilities, balls (held balls follow the hand socket the same frame),
@@ -31,7 +40,8 @@ import * as InputModule from '../input/input.js';
 import * as BotModule from '../ai/bot.js';
 import {
   tallyTeams, decideRound, applyRoundResult, pickLongestWaiting, lowestFreeIndex, pickSpawnSlot, countdownNumber,
-  ROUND_END_REASON, NO_WINNER, HP_TIE_TOLERANCE,
+  ROUND_END_REASON, NO_WINNER, HP_TIE_TOLERANCE, nextServeTeam, pickStartingOutfielders, makePossessionClock,
+  stepPossession, releasePossession, pickAwardReceiver,
 } from './outcome.js';
 
 /** Match phases (`Match.phase`). */
@@ -83,20 +93,29 @@ class PlayerDriver {
  * @property {number} transferAt     scaled time the ragdoll ends and the outfield move happens (-1 = none pending)
  * @property {number} outfieldSince  scaled time of arrival in the outfield (-1 = not in the outfield)
  * @property {number} outfieldSpot   outfield spot index (-1 = none)
+ * @property {boolean} startsOutfield starting outfielder (元外野): in the outfield all round, never revived / returned
+ * @property {number} infieldIndex   index among the team's infield starters (spawn line), -1 for starting outfielders
+ * @property {number} starterIndex   index among the team's starting outfielders (outfield spot), -1 otherwise
  */
 
 export class Match {
   /** Default rules (contract §3.6). Copied into `this.rules` at every startMatch (URL params / setup.rules override). */
   static defaults = Object.freeze({
-    playersPerTeam: 3,
+    playersPerTeam: 4,         // 3 infield + 1 starting outfielder
+    startingOutfielders: 1,    // 元外野 per team, clamped to [0, playersPerTeam - 1]
     roundsToWin: 2,            // best of 3
     roundTime: 150,            // s
     preRound: 2.5,             // s of line-up / cinematic intro
     countdown: 3,              // 3, 2, 1
     roundEnd: 4,               // s of celebration between rounds
     matchEndDelay: 6,          // s on the result screen before hero select (or the next spectate match)
-    ballCount: 6,
-    outfieldHitRevives: true,  // an outfield player who hits an infield enemy returns to the infield
+    ballCount: 1,              // single-ball rules (forced to 1)
+    possessionLimit: 10,       // s (scaled) of possession before the ball goes to the opponents (0 = off; ?possession=N)
+    possessionWarning: 3,      // s: last seconds announced (EV.PossessionWarning, HUD countdown)
+    deadBallClock: true,       // a loose ball resting in a team's zone runs that team's clock
+    awardDelay: 0.6,           // s the ball is hidden while handed over after a violation
+    outOfArenaAwardDelay: 1.5, // s the ball is hidden after leaving the arena
+    outfieldHitRevives: true,  // an ELIMINATED outfield player who hits an infield enemy returns to the infield
     catchEliminatesThrower: false,
     ragdollTime: 2,            // s between elimination and the outfield move
     reviveHp: 1,               // HP fraction restored when returning from the outfield
@@ -151,12 +170,31 @@ export class Match {
     this._snaps = [];
     this._tally = { infield: [0, 0], hp: [0, 0] };
 
+    /** Team serving the current round (TEAM.NONE before the first preRound). */
+    this.serveTeam = TEAM.NONE;
+    /** Player who held the serve this round. */
+    this.server = null;
+    this._lastServeTeam = TEAM.NONE;
+    /**
+     * Possession clock readout (reused object; HUD / AI read it): owning team (TEAM.NONE = nobody), holder (null for a
+     * dead ball), seconds elapsed / limit / remaining, running (the clock advances this frame), deadBall (loose ball).
+     */
+    this.possession = { team: TEAM.NONE, holder: null, elapsed: 0, limit: 0, remaining: Infinity, running: false, deadBall: false };
+    this._clock = makePossessionClock();
+    this._announcedTeam = TEAM.NONE;
+    this._zoneOut = { team: TEAM.NONE, zone: ZONE.INFIELD };
+    // Reused award-receiver candidates.
+    this._awardCands = [];
+    this._awardPlayers = [];
+
     const ev = game.events;
     this._unsubs = [
       ev.on(EV.PlayerEliminated, (e) => this._onPlayerEliminated(e)),
       ev.on(EV.PlayerRevived, (e) => this._onPlayerRevived(e)),
       ev.on(EV.BallHitPlayer, (e) => this._onBallHitPlayer(e)),
       ev.on(EV.BallCaught, (e) => this._onBallCaught(e)),
+      ev.on(EV.BallThrown, () => this._onBallReleased()),
+      ev.on(EV.BallPassed, (e) => { if (e && e.teleported) this._onBallReleased(); }),
     ];
   }
 
@@ -187,20 +225,31 @@ export class Match {
     this.lastRoundWinner = NO_WINNER;
     this.lastRoundReason = null;
     this.countdownLeft = 0;
+    this.serveTeam = TEAM.NONE;
+    this.server = null;
+    this._lastServeTeam = TEAM.NONE;
+    this._resetPossession();
     this._matchCount++;
     this._setPhase(MATCH_PHASE.IDLE);
 
     if (!game.court) { console.error('[match] startMatch: no court (arena not built)'); return; }
 
-    // ---- create the six players (construction is synchronous; avatars load in parallel)
+    // ---- create the eight players (construction is synchronous; avatars load in parallel)
     const created = [];
     let id = 1;
     for (const team of [TEAM.HOME, TEAM.AWAY]) {
       const heroes = team === TEAM.HOME ? this.setup.homeHeroes : this.setup.awayHeroes;
       const localSlot = !this.setup.spectate && team === this.setup.localTeam ? Math.max(0, heroes.indexOf(this.setup.localHero)) : -1;
+      // Starting outfielders: the highest slots that are not the human (the human always starts infield).
+      const lineup = [];
+      for (let slot = 0; slot < heroes.length; slot++) lineup.push({ slot, isLocal: slot === localSlot });
+      const starters = pickStartingOutfielders(lineup, this.rules.startingOutfielders);
       for (let slot = 0; slot < heroes.length; slot++) {
         const player = this._createPlayer(id++, team, slot, heroes[slot], slot === localSlot);
-        if (player) created.push({ player, team, slot });
+        if (!player) continue;
+        const startsOutfield = starters.includes(slot);
+        player.isStartingOutfielder = startsOutfield;
+        created.push({ player, team, slot, startsOutfield });
       }
     }
 
@@ -213,13 +262,16 @@ export class Match {
 
     const court = game.court;
     for (let i = 0; i < created.length; i++) {
-      const { player, team, slot } = created[i];
+      const { player, team, slot, startsOutfield } = created[i];
       if (results[i].status === 'rejected') {
         console.error(`[match] player ${player.id} (${player.hero && player.hero.id}) failed to initialise`, results[i].reason);
         this._disposePlayer(player);
         continue;
       }
-      const record = { player, team, slot, eliminatedAt: -1, transferAt: -1, outfieldSince: -1, outfieldSpot: -1 };
+      const record = {
+        player, team, slot, eliminatedAt: -1, transferAt: -1, outfieldSince: -1, outfieldSpot: -1,
+        startsOutfield: !!startsOutfield, infieldIndex: -1, starterIndex: -1,
+      };
       this._records.set(player, record);
       this._recs.push(record);
       this.players.push(player);
@@ -232,14 +284,21 @@ export class Match {
     }
     this.local = this.players.find((p) => p.isLocal) || null;
     if (!this.players.length) { console.error('[match] no player could be spawned'); return; }
+    this._assignLineIndices();
 
     // Camera follows the local player (spectate: null -> the rig's orbit over the court).
     const rig = game.cameraRig;
     if (rig && rig.setTarget) rig.setTarget(this.local, true);
 
-    // Match balls: (re)create the set, then place them for the opening rush.
+    // The match ball (one): created at the Home serve point; every preRound hands it to the server.
     if (game.balls && game.balls.setupMatchBalls) {
-      try { game.balls.setupMatchBalls(court.openingBallPositions(this.rules.ballCount)); } catch (e) { console.error('[match] setupMatchBalls failed', e); }
+      try {
+        if (game.balls.tuning) {
+          game.balls.tuning.awardDelay = this.rules.awardDelay;
+          game.balls.tuning.outOfArenaAwardDelay = this.rules.outOfArenaAwardDelay;
+        }
+        game.balls.setupMatchBalls([court.servePoint(TEAM.HOME)]);
+      } catch (e) { console.error('[match] setupMatchBalls failed', e); }
     }
 
     this._beginPreRound();
@@ -272,11 +331,50 @@ export class Match {
     return this._computeTally().hp[team] || 0;
   }
 
-  /** Players of `team` standing in the outfield strip. */
+  /** Players of `team` standing in the outfield U (starting outfielders included). */
   countOutfield(team) {
     let n = 0;
     for (const p of this.players) if (p.team === team && p.zone === ZONE.OUTFIELD) n++;
     return n;
+  }
+
+  /** ELIMINATED players of `team` standing in the outfield (starting outfielders excluded). */
+  countEliminatedOutfield(team) {
+    let n = 0;
+    for (const r of this._recs) if (r.team === team && !r.startsOutfield && r.player.zone === ZONE.OUTFIELD) n++;
+    return n;
+  }
+
+  /** Is `player` a starting outfielder (元外野) of this match? */
+  isStartingOutfielder(player) {
+    const r = player && this._records.get(player);
+    return !!(r && r.startsOutfield);
+  }
+
+  /**
+   * Best player of `team` to hand an awarded ball to (BallManager.awardBall): the eligible INFIELD player nearest
+   * `nearPos` (can receive, can act, not ragdolling), else the nearest eligible outfielder, else null.
+   * @param {number} team
+   * @param {{x:number,z:number}} [nearPos]
+   */
+  pickAwardReceiver(team, nearPos) {
+    const cands = this._awardCands, players = this._awardPlayers;
+    let n = 0;
+    for (const r of this._recs) {
+      if (r.team !== team) continue;
+      const p = r.player;
+      let c = cands[n];
+      if (!c) c = cands[n] = { x: 0, z: 0, infield: true, eligible: false };
+      c.x = p.position.x; c.z = p.position.z;
+      c.infield = p.zone === ZONE.INFIELD;
+      c.eligible = r.transferAt < 0 && p.canReceive !== false && p.canAct !== false;
+      players[n] = p;
+      n++;
+    }
+    cands.length = n; players.length = n;
+    const x = nearPos ? nearPos.x : 0, z = nearPos ? nearPos.z : 0;
+    const i = pickAwardReceiver(cands, x, z);
+    return i >= 0 ? players[i] : null;
   }
 
   /** True while `player` ragdolls between elimination and the outfield move. */
@@ -317,6 +415,8 @@ export class Match {
     const court = game.court;
     if (!r || !court) return false;
     if (cause !== REVIVE_CAUSE.ROUND_RESET && !this.isPlaying) return false;
+    // The starting outfielder stays out there for the whole round.
+    if (r.startsOutfield && cause !== REVIVE_CAUSE.ROUND_RESET) return false;
     const inOutfield = p.zone === ZONE.OUTFIELD;
     const awaiting = r.transferAt >= 0;
     if (!inOutfield && !awaiting) return false;
@@ -352,9 +452,9 @@ export class Match {
   }
 
   /**
-   * Perfect Catch reward: revives the teammate of `team` who has been in the outfield the longest (or, if nobody is
-   * out there yet, the one ragdolling the longest). De-duplicated per reviver and frame, because both Combat and the
-   * BallCaught observer below may report the same catch.
+   * Perfect Catch reward: revives the ELIMINATED teammate of `team` who has been in the outfield the longest (or, if
+   * nobody is out there yet, the one ragdolling the longest). Starting outfielders are never revived. De-duplicated
+   * per reviver and frame, because both Combat and the BallCaught observer below may report the same catch.
    * @returns {any|null} the revived player
    */
   reviveOneOutfield(team, cause = REVIVE_CAUSE.PERFECT_CATCH, reviver = null) {
@@ -370,7 +470,7 @@ export class Match {
     const outfield = [];
     const falling = [];
     for (const r of this._recs) {
-      if (r.team !== team || r.player === reviver) continue;
+      if (r.team !== team || r.player === reviver || r.startsOutfield) continue;
       if (r.transferAt >= 0) falling.push({ r, since: r.eliminatedAt });
       else if (r.player.zone === ZONE.OUTFIELD) outfield.push({ r, since: r.outfieldSince });
     }
@@ -414,7 +514,8 @@ export class Match {
       case MATCH_PHASE.PLAYING:
         this.timeLeft = Math.max(0, this.timeLeft - dt);
         if (this._checkRoundEnd()) break;
-        if (this.timeLeft <= 0) this._endRound(this._decide(true));
+        if (this.timeLeft <= 0) { this._endRound(this._decide(true)); break; }
+        this._updatePossession(dt);
         break;
       case MATCH_PHASE.ROUND_END:
         if (this._phaseTime >= rules.roundEnd) {
@@ -440,27 +541,65 @@ export class Match {
   // ================================================================== round flow
 
   _beginPreRound() {
+    // The previous round's result decides who serves (lastRoundWinner is cleared below).
+    const prevWinner = this.round > 0 ? this.lastRoundWinner : NO_WINNER;
     this.round++;
     this.timeLeft = this.rules.roundTime;
     this.countdownLeft = 0;
     this.lastRoundWinner = NO_WINNER;
     this.lastRoundReason = null;
     this._restoreSlowMo();
+    this._resetPossession();
     this._setPhase(MATCH_PHASE.PRE_ROUND);
+
+    // Serve: round 1 by (seeded) coin, then the loser of the previous round, after a draw the other team.
+    this.serveTeam = nextServeTeam(this.round, prevWinner, this._lastServeTeam, game.rng.next());
+    this._lastServeTeam = this.serveTeam;
 
     this._resetPlayersForRound();
     const court = game.court;
+    const servePos = court.servePoint(this.serveTeam);
     if (game.balls && game.balls.resetForRound) {
-      try { game.balls.resetForRound(court.openingBallPositions(this.rules.ballCount)); } catch (e) { console.error('[match] balls.resetForRound failed', e); }
+      try { game.balls.resetForRound([servePos]); } catch (e) { console.error('[match] balls.resetForRound failed', e); }
     }
-
-    // Broadcast intro: the camera frames the centre line (both line-ups and the opening balls).
-    const rig = game.cameraRig;
-    if (rig && rig.setCinematic) rig.setCinematic(new THREE.Vector3(0, court.floorY + MATCH_TUNING.cinematicFocusHeight, 0));
 
     if (this.round === 1) {
-      game.events.emit(EV.MatchStarted, { roundsToWin: this.rules.roundsToWin, playersPerTeam: this.rules.playersPerTeam });
+      const r = this.rules;
+      game.events.emit(EV.MatchStarted, {
+        roundsToWin: r.roundsToWin, playersPerTeam: r.playersPerTeam, infieldPerTeam: r.playersPerTeam - r.startingOutfielders,
+        startingOutfielders: r.startingOutfielders, ballCount: r.ballCount, possessionLimit: r.possessionLimit,
+      });
     }
+    this._serveBall(servePos);
+
+    // Broadcast intro: the camera frames the centre line (both line-ups and the server).
+    const rig = game.cameraRig;
+    if (rig && rig.setCinematic) rig.setCinematic(new THREE.Vector3(0, court.floorY + MATCH_TUNING.cinematicFocusHeight, 0));
+  }
+
+  /** Puts the ball in the server's hand at the serve point (HELD through preRound and the countdown). */
+  _serveBall(servePos) {
+    const server = this._pickServer(this.serveTeam);
+    this.server = server;
+    const ball = game.balls && game.balls.ball;
+    if (!server || !ball) return;
+    try {
+      server.teleport(servePos, game.court.spawnYaw(this.serveTeam));
+      if (server.combat && server.combat.giveBall) server.combat.giveBall(ball);
+    } catch (e) {
+      console.error('[match] serve failed', e);
+    }
+    game.events.emit(EV.ServeReady, { round: this.round, team: this.serveTeam, player: server, ball });
+  }
+
+  /** The local human if on the serving team (always infield at the start), else infield starters in rotation. */
+  _pickServer(team) {
+    if (this.local && this.local.team === team && this.local.zone === ZONE.INFIELD) return this.local;
+    const list = [];
+    for (const r of this._recs) if (r.team === team && !r.startsOutfield) list.push(r);
+    if (!list.length) return null;
+    list.sort((a, b) => a.infieldIndex - b.infieldIndex);
+    return list[(Math.max(1, this.round) - 1) % list.length].player;
   }
 
   _beginCountdown() {
@@ -483,7 +622,98 @@ export class Match {
     this._setPhase(MATCH_PHASE.PLAYING);
     // Unlock everyone except players still ragdolling toward the outfield.
     for (const r of this._recs) r.player.inputLocked = r.transferAt >= 0;
-    game.events.emit(EV.RoundStarted, { round: this.round, duration: this.rules.roundTime });
+    // The serving team's clock starts at the whistle.
+    this._resetPossession();
+    const ball = game.balls && game.balls.ball;
+    const holder = ball && ball.state === 'held' ? ball.holder : this.server;
+    const team = holder && (holder.team === TEAM.HOME || holder.team === TEAM.AWAY) ? holder.team : this.serveTeam;
+    this._clock.team = team;
+    this._announcePossession(team, holder || null, 'serve');
+    this._fillPossession(team, holder || null, true, false);
+    game.events.emit(EV.RoundStarted, { round: this.round, duration: this.rules.roundTime, serveTeam: this.serveTeam, server: this.server });
+  }
+
+  // ================================================================== possession clock
+
+  /** Clears the clock (round start / end). */
+  _resetPossession() {
+    releasePossession(this._clock);
+    this._announcedTeam = TEAM.NONE;
+    this._fillPossession(TEAM.NONE, null, false, false);
+  }
+
+  /** A throw / pass (or Houdini's teleport pass) released the ball: nobody owns the clock until the next possession. */
+  _onBallReleased() {
+    if (!this.isPlaying) return;
+    releasePossession(this._clock);
+    this._fillPossession(TEAM.NONE, null, false, false);
+  }
+
+  _fillPossession(team, holder, running, deadBall) {
+    const o = this.possession, limit = this.rules.possessionLimit > 0 ? this.rules.possessionLimit : 0;
+    o.team = team;
+    o.holder = holder;
+    o.elapsed = team === TEAM.NONE ? 0 : this._clock.elapsed;
+    o.limit = limit;
+    o.remaining = limit > 0 ? Math.max(0, limit - o.elapsed) : Infinity;
+    o.running = !!running && team !== TEAM.NONE;
+    o.deadBall = !!deadBall;
+  }
+
+  _announcePossession(team, holder, cause) {
+    if (team === this._announcedTeam || (team !== TEAM.HOME && team !== TEAM.AWAY)) return;
+    const previous = this._announcedTeam;
+    this._announcedTeam = team;
+    game.events.emit(EV.PossessionChanged, { team, previous, player: holder, cause });
+  }
+
+  /**
+   * Owner of the single ball this frame and the clock step (ORDER.MATCH, scaled dt):
+   *   held by a player -> that team (runs while the holder can act); stored by a team's gadget (custodyTeam) -> that
+   *   team, paused; loose -> the team whose zone it rests in (dead-ball rule; runs); live / stasis / hidden -> nobody.
+   */
+  _updatePossession(dt) {
+    const rules = this.rules;
+    const ball = game.balls && game.balls.ball;
+    if (!ball) { this._fillPossession(TEAM.NONE, null, false, false); return; }
+    let owner = TEAM.NONE, holder = null, running = false, deadBall = false, cause = 'held';
+    const st = ball.state;
+    if (st === 'held' && ball.holder) {
+      holder = ball.holder;
+      owner = holder.team;
+      running = holder.canAct !== false;
+    } else if (st === 'despawned' && (ball.custodyTeam === TEAM.HOME || ball.custodyTeam === TEAM.AWAY)) {
+      owner = ball.custodyTeam;
+    } else if (st === 'free' && rules.deadBallClock && game.court && game.court.zoneAt) {
+      const z = game.court.zoneAt(ball.position, this._zoneOut);
+      if (z) { owner = z.team; running = true; deadBall = true; cause = 'loose'; }
+    }
+    if ((owner === TEAM.HOME || owner === TEAM.AWAY) && ball.isReservedFor && ball.isReservedFor(owner)) cause = 'award';
+    const clock = this._clock;
+    const r = stepPossession(clock, owner, running, dt, rules.possessionLimit, rules.possessionWarning);
+    if (clock.changed) this._announcePossession(clock.team, holder, cause);
+    const team = owner === TEAM.NONE ? TEAM.NONE : clock.team;
+    this._fillPossession(team, holder, running, deadBall);
+    if (r > 0) {
+      game.events.emit(EV.PossessionWarning, { team: clock.team, player: holder, secondsLeft: r });
+    } else if (r < 0) {
+      this._possessionViolation(ball, clock.team, holder);
+    }
+  }
+
+  /** The clock ran out: the ball goes to the opponents (hidden for rules.awardDelay, then at their feet). */
+  _possessionViolation(ball, team, holder) {
+    const heldFor = this._clock.elapsed;
+    const awardedTo = opponent(team);
+    try {
+      if (holder && holder.combat && holder.combat.cancelCharge) holder.combat.cancelCharge();
+      if (game.balls && game.balls.awardBall) game.balls.awardBall(ball, awardedTo, 'possession', ball.position, this.rules.awardDelay);
+    } catch (e) {
+      console.error('[match] possession award failed', e);
+    }
+    releasePossession(this._clock);
+    this._fillPossession(TEAM.NONE, null, false, false);
+    game.events.emit(EV.PossessionViolation, { team, player: holder, ball, heldFor, awardedTo });
   }
 
   /** Polls the head counts; ends the round when a team is wiped out. @returns {boolean} true if the round ended */
@@ -515,6 +745,7 @@ export class Match {
     this.lastRoundReason = result.reason;
 
     this._setPhase(MATCH_PHASE.ROUND_END);
+    this._resetPossession();
     this._freezePlayersForBreak();
     this._playCelebrations(result.winner);
     // Broadcast touch: the deciding elimination plays out in slow motion (real-time recovery, see _updateSlowMo).
@@ -581,8 +812,8 @@ export class Match {
     r.transferAt = -1;
     const spot = this._freeOutfieldSpot(r);
     const pos = court.outfieldSpot(r.team, spot);
-    // Outfield players face back toward the enemy infield they attack (= the opponent's spawn facing).
-    const yaw = court.spawnYaw(opponent(r.team));
+    // Outfield players face the centre of the enemy half they surround (arm spots face sideways).
+    const yaw = court.outfieldYaw(r.team, pos);
     try {
       if (p.avatar && p.avatar.resetVisual) p.avatar.resetVisual(); // end the ragdoll, back to animation
       if (p.motor && p.motor.setConfinement) p.motor.setConfinement(court.confinement(r.team, ZONE.OUTFIELD));
@@ -618,14 +849,35 @@ export class Match {
   /** Spawn-line slot farthest from every other infield player (small preference for the player's own slot). */
   _freeInfieldSpawn(target) {
     const court = game.court;
-    const count = Math.max(this.rules.playersPerTeam, this._teamSize(target.team));
+    const count = this._infieldSlots(target.team);
     const slots = [];
     for (let s = 0; s < count; s++) slots.push(court.spawnPoint(target.team, s, count));
     const occupied = [];
     for (const r of this._recs) {
       if (r !== target && r.player.zone === ZONE.INFIELD) occupied.push(r.player.position);
     }
-    return slots[pickSpawnSlot(slots, occupied, target.slot % count)];
+    const own = target.infieldIndex >= 0 ? target.infieldIndex : target.slot;
+    return slots[pickSpawnSlot(slots, occupied, own % count)];
+  }
+
+  /** Infield spawn-line size of `team`: its infield starters (3 by default). */
+  _infieldSlots(team) {
+    let n = 0;
+    for (const r of this._recs) if (r.team === team && !r.startsOutfield) n++;
+    return Math.max(1, n, this.rules.playersPerTeam - this.rules.startingOutfielders);
+  }
+
+  /** Infield spawn indices and starting-outfield indices per team, in slot order (after failed spawns are dropped). */
+  _assignLineIndices() {
+    for (const team of [TEAM.HOME, TEAM.AWAY]) {
+      const list = this._recs.filter((r) => r.team === team).sort((a, b) => a.slot - b.slot);
+      let inf = 0, out = 0;
+      // Never leave a team without an infield player (e.g. everyone else failed to load).
+      if (list.length && list.every((r) => r.startsOutfield)) { list[0].startsOutfield = false; list[0].player.isStartingOutfielder = false; }
+      for (const r of list) {
+        if (r.startsOutfield) { r.starterIndex = out++; r.infieldIndex = -1; } else { r.infieldIndex = inf++; r.starterIndex = -1; }
+      }
+    }
   }
 
   _clearDebuffs(p) {
@@ -681,8 +933,10 @@ export class Match {
     const gain = this.rules.ultOnHit + (e.outcome === 'eliminated' ? this.rules.ultOnEliminate : 0);
     if (gain > 0 && attacker.abilities && attacker.abilities.addUltimateCharge) attacker.abilities.addUltimateCharge(gain, 'hit');
 
-    // Taiwanese outfield rule: an outfield player who hits an infield enemy returns to the infield.
-    if (this.rules.outfieldHitRevives && attacker.zone === ZONE.OUTFIELD) {
+    // Taiwanese outfield rule: an ELIMINATED outfield player who hits an infield enemy returns to the infield (the
+    // starting outfielder stays out).
+    const rec = this._records.get(attacker);
+    if (this.rules.outfieldHitRevives && attacker.zone === ZONE.OUTFIELD && !(rec && rec.startsOutfield)) {
       this.reviveFromOutfield(attacker, REVIVE_CAUSE.OUTFIELD_HIT, null);
     }
   }
@@ -691,6 +945,8 @@ export class Match {
     if (!this.isPlaying || !e) return;
     const catcher = e.catcher;
     if (!catcher || !this._records.has(catcher)) return;
+    // Intercepting an enemy pass only takes possession: no revive, no ult, no catch-elimination.
+    if (e.intercepted) return;
 
     if (e.quality === 'perfect') {
       // Combat calls reviveOneOutfield itself; the de-duplication makes this a safety net, never a double revive.
@@ -765,13 +1021,22 @@ export class Match {
       const p = r.player;
       const wasDown = r.transferAt >= 0 || r.eliminatedAt >= 0;
       r.eliminatedAt = -1; r.transferAt = -1; r.outfieldSince = -1; r.outfieldSpot = -1;
-      const pos = court.spawnPoint(r.team, r.slot, this._teamSize(r.team));
-      const yaw = court.spawnYaw(r.team);
+      // Infield starters on the spawn line (infield index / count); starting outfielders on their U spot.
+      const zone = r.startsOutfield ? ZONE.OUTFIELD : ZONE.INFIELD;
+      let pos, yaw;
+      if (r.startsOutfield) {
+        r.outfieldSpot = Math.max(0, r.starterIndex);
+        pos = court.outfieldSpot(r.team, r.outfieldSpot);
+        yaw = court.outfieldYaw(r.team, pos);
+      } else {
+        pos = court.spawnPoint(r.team, Math.max(0, r.infieldIndex), this._infieldSlots(r.team));
+        yaw = court.spawnYaw(r.team);
+      }
       try {
-        if (p.motor && p.motor.setConfinement) p.motor.setConfinement(court.confinement(r.team, ZONE.INFIELD));
-        if (p.zone !== ZONE.INFIELD) p.setZone(ZONE.INFIELD);
+        if (p.motor && p.motor.setConfinement) p.motor.setConfinement(court.confinement(r.team, zone));
+        if (zone === ZONE.INFIELD && p.zone !== ZONE.INFIELD) p.setZone(ZONE.INFIELD);
         if (wasDown && p.avatar && p.avatar.resetVisual) p.avatar.resetVisual(); // still ragdolled from last round
-        p.resetForRound(pos, yaw);
+        p.resetForRound(pos, yaw, zone);
         // Defensive: the round always starts with everybody alive and able to move.
         if (p.health && p.health.isEliminated && p.health.resetForRound) p.health.resetForRound();
         if (p.fsm && p.fsm.is && p.fsm.is('incapacitated') && p.fsm.resetToGrounded) p.fsm.resetToGrounded();
@@ -858,12 +1123,6 @@ export class Match {
     this.local = null;
     this._reviveDedupe.frame = -1; this._reviveDedupe.reviver = null; this._reviveDedupe.revived = null;
     this._restoreSlowMo();
-  }
-
-  _teamSize(team) {
-    let n = 0;
-    for (const r of this._recs) if (r.team === team) n++;
-    return Math.max(1, n);
   }
 
   /** Fills the reused snapshots and returns the per-team tally (no allocations after the first call). */
@@ -966,9 +1225,18 @@ export class Match {
       if (rounds !== undefined) rules.roundsToWin = Math.round(rounds);
       const ragdoll = num('ragdollTime', 0.2, 6);
       if (ragdoll !== undefined) rules.ragdollTime = ragdoll;
+      // ?possession=N: 0 disables the anti-stall clock, otherwise 3..30 s.
+      const possession = num('possession', 0, 30);
+      if (possession !== undefined) rules.possessionLimit = possession <= 0 ? 0 : Math.max(3, possession);
     }
     if (overrides && typeof overrides === 'object') Object.assign(rules, overrides);
-    rules.playersPerTeam = Math.max(1, Math.round(rules.playersPerTeam) || 3);
+    rules.playersPerTeam = Math.max(1, Math.round(rules.playersPerTeam) || 4);
+    rules.startingOutfielders = Math.min(rules.playersPerTeam - 1, Math.max(0, Math.round(rules.startingOutfielders) || 0));
+    if (rules.ballCount !== 1) {
+      if (rules.ballCount > 1) console.warn(`[match] single-ball rules: ballCount ${rules.ballCount} ignored, using 1`);
+      rules.ballCount = 1;
+    }
+    rules.possessionLimit = Number.isFinite(rules.possessionLimit) && rules.possessionLimit > 0 ? rules.possessionLimit : 0;
     return rules;
   }
 
@@ -994,7 +1262,7 @@ export class Match {
     };
   }
 
-  /** Fresh random 3v3 line-up for attract mode (same difficulty). */
+  /** Fresh random 4v4 line-up (8 distinct heroes) for attract mode (same difficulty). */
   _makeSpectateSetup() {
     const n = this.rules.playersPerTeam;
     const pool = game.rng.shuffle(HERO_IDS.slice());

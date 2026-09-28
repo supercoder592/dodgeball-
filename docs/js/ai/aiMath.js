@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------------------------------------------
 // Pure AI math (no three.js, no game state): works on any {x, y, z} objects (THREE.Vector3 included) and on plain
-// planar bounds { minX, maxX, minZ, maxZ } (world/court.js). Allocation-free: results are written into `out`
-// arguments. Unit tested by aiMath.test.js (node:test).
+// planar regions { minX, maxX, minZ, maxZ, hole? } (world/court.js; the U outfields carry a hole). Allocation-free:
+// results are written into `out` arguments. Unit tested by aiMath.test.js (node:test).
 // Units: metres, seconds, degrees only where the name says so. World up = +Y, planar = XZ.
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -55,29 +55,95 @@ export function planarAngleDeg(ax, az, bx, bz) {
   return Math.acos(clamp((ax * bx + az * bz) / (la * lb), -1, 1)) * RAD2DEG;
 }
 
-/** Copies `b` shrunk by `margin` on every side into `out` (collapses to the centre when too small). */
+// ------------------------------------------------------------------ planar regions (hole-aware)
+// A region is a planar box { minX, maxX, minZ, maxZ } with an optional `hole` box of the same shape (world/court.js
+// U outfields: the opponent's half, overshooting the open centre-line side). Hole tests are strict, so hole edges are
+// walkable. An EXIT edge is a hole edge lying strictly inside the outer box: a point stuck inside the hole leaves
+// through the nearest exit edge. Mirrors world/courtMath.js (kept local so the AI's pure tests have no dependencies).
+
+/** Hole edge ids used by the exit-edge helpers. */
+const H_MINX = 0, H_MAXX = 1, H_MINZ = 2, H_MAXZ = 3;
+function _isExit(b, h, edge) {
+  switch (edge) {
+    case H_MINX: return h.minX > b.minX;
+    case H_MAXX: return h.maxX < b.maxX;
+    case H_MINZ: return h.minZ > b.minZ;
+    default: return h.maxZ < b.maxZ;
+  }
+}
+/** Point strictly inside the region's hole. */
+function _inHole(h, x, z) { return !!h && x > h.minX && x < h.maxX && z > h.minZ && z < h.maxZ; }
+
+/**
+ * Copies `b` shrunk by `margin` on every side into `out` (collapses to the centre when too small). A hole grows by
+ * `margin` (its exit edges at most up to 1 mm short of the middle of the walkable band, so a narrow band collapses to a
+ * line that stays walkable rather than inverting); `out.hole` is a buffer kept on `out` (allocated once) or null.
+ */
 export function shrinkBounds(b, margin, out) {
   const cx = (b.minX + b.maxX) * 0.5, cz = (b.minZ + b.maxZ) * 0.5;
   out.minX = Math.min(b.minX + margin, cx); out.maxX = Math.max(b.maxX - margin, cx);
   out.minZ = Math.min(b.minZ + margin, cz); out.maxZ = Math.max(b.maxZ - margin, cz);
+  const h = b.hole;
+  if (!h) { out.hole = null; return out; }
+  const oh = _holeBuffer(out);
+  // Exit edges: grow toward the outer wall, meeting the shrunk outer edge in the middle of the band at worst.
+  if (_isExit(b, h, H_MINX)) { const mid = (b.minX + h.minX) * 0.5; oh.minX = Math.max(h.minX - margin, mid + 1e-3); out.minX = Math.min(out.minX, mid); } else oh.minX = h.minX - margin;
+  if (_isExit(b, h, H_MAXX)) { const mid = (b.maxX + h.maxX) * 0.5; oh.maxX = Math.min(h.maxX + margin, mid - 1e-3); out.maxX = Math.max(out.maxX, mid); } else oh.maxX = h.maxX + margin;
+  if (_isExit(b, h, H_MINZ)) { const mid = (b.minZ + h.minZ) * 0.5; oh.minZ = Math.max(h.minZ - margin, mid + 1e-3); out.minZ = Math.min(out.minZ, mid); } else oh.minZ = h.minZ - margin;
+  if (_isExit(b, h, H_MAXZ)) { const mid = (b.maxZ + h.maxZ) * 0.5; oh.maxZ = Math.min(h.maxZ + margin, mid - 1e-3); out.maxZ = Math.max(out.maxZ, mid); } else oh.maxZ = h.maxZ + margin;
+  out.hole = oh;
   return out;
 }
-export function copyBounds(b, out) { out.minX = b.minX; out.maxX = b.maxX; out.minZ = b.minZ; out.maxZ = b.maxZ; return out; }
-export function containsPlanar(b, p) { return p.x >= b.minX && p.x <= b.maxX && p.z >= b.minZ && p.z <= b.maxZ; }
+function _holeBuffer(out) {
+  let h = out._holeBuf;
+  if (!h) { h = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 }; Object.defineProperty(out, '_holeBuf', { value: h, enumerable: false }); }
+  return h;
+}
+/** Copies region `b` (and its hole, into a buffer owned by `out`) into `out`. */
+export function copyBounds(b, out) {
+  out.minX = b.minX; out.maxX = b.maxX; out.minZ = b.minZ; out.maxZ = b.maxZ;
+  const h = b.hole;
+  if (h) {
+    const oh = _holeBuffer(out);
+    oh.minX = h.minX; oh.maxX = h.maxX; oh.minZ = h.minZ; oh.maxZ = h.maxZ;
+    out.hole = oh;
+  } else out.hole = null;
+  return out;
+}
+/** Inside the outer box (inclusive) and not strictly inside the hole. */
+export function containsPlanar(b, p) {
+  return p.x >= b.minX && p.x <= b.maxX && p.z >= b.minZ && p.z <= b.maxZ && !_inHole(b.hole, p.x, p.z);
+}
 
-/** Planar clamp of p into b, written into out (out.y = p.y). */
+/**
+ * Planar clamp of p into region b (nearest point: outer box, then out of the hole through the nearest exit edge),
+ * written into out (out.y = p.y).
+ */
 export function clampPlanar(p, b, out) {
-  out.x = clamp(p.x, b.minX, b.maxX);
-  out.y = p.y;
-  out.z = clamp(p.z, b.minZ, b.maxZ);
+  let x = clamp(p.x, b.minX, b.maxX), z = clamp(p.z, b.minZ, b.maxZ);
+  const h = b.hole;
+  if (_inHole(h, x, z)) {
+    let best = Infinity, bx = x, bz = z;
+    if (_isExit(b, h, H_MINX) && x - h.minX < best) { best = x - h.minX; bx = h.minX; bz = z; }
+    if (_isExit(b, h, H_MAXX) && h.maxX - x < best) { best = h.maxX - x; bx = h.maxX; bz = z; }
+    if (_isExit(b, h, H_MINZ) && z - h.minZ < best) { best = z - h.minZ; bx = x; bz = h.minZ; }
+    if (_isExit(b, h, H_MAXZ) && h.maxZ - z < best) { best = h.maxZ - z; bx = x; bz = h.maxZ; }
+    x = bx; z = bz;
+  }
+  out.x = x; out.y = p.y; out.z = z;
   return out;
 }
 
-/** Planar distance from p to the nearest point of b (0 inside). */
+const _cp = { x: 0, y: 0, z: 0 };
+/** Planar distance from p to the nearest point of region b (0 inside). */
 export function planarDistanceToBounds(p, b) {
-  const dx = Math.max(b.minX - p.x, 0, p.x - b.maxX);
-  const dz = Math.max(b.minZ - p.z, 0, p.z - b.maxZ);
-  return Math.hypot(dx, dz);
+  if (!b.hole) {
+    const dx = Math.max(b.minX - p.x, 0, p.x - b.maxX);
+    const dz = Math.max(b.minZ - p.z, 0, p.z - b.maxZ);
+    return Math.hypot(dx, dz);
+  }
+  clampPlanar(p, b, _cp);
+  return Math.hypot(p.x - _cp.x, p.z - _cp.z);
 }
 
 /** Distance (m) one can travel from (px, pz) along the unit direction (dx, dz) before leaving b (0 when outside). */
@@ -95,13 +161,59 @@ export function edgeProximity(px, pz, b) {
   return Math.max(Math.abs(px - cx) / hx, Math.abs(pz - cz) / hz);
 }
 
-/** Zeroes the planar components of `move` that would push a body at `p` out of b (within `margin`). */
+/**
+ * Zeroes the planar components of `move` that would push a body at `p` out of b (within `margin`), including the
+ * exit walls of a hole (a U outfielder never steps into the opponent's half).
+ */
 export function keepInside(p, move, b, margin) {
   if (p.x <= b.minX + margin && move.x < 0) move.x = 0;
   if (p.x >= b.maxX - margin && move.x > 0) move.x = 0;
   if (p.z <= b.minZ + margin && move.z < 0) move.z = 0;
   if (p.z >= b.maxZ - margin && move.z > 0) move.z = 0;
+  const h = b.hole;
+  if (h) {
+    const inZ = p.z > h.minZ && p.z < h.maxZ, inX = p.x > h.minX && p.x < h.maxX;
+    if (inZ && _isExit(b, h, H_MINX) && p.x <= h.minX + 1e-6 && p.x >= h.minX - margin && move.x > 0) move.x = 0;
+    if (inZ && _isExit(b, h, H_MAXX) && p.x >= h.maxX - 1e-6 && p.x <= h.maxX + margin && move.x < 0) move.x = 0;
+    if (inX && _isExit(b, h, H_MINZ) && p.z <= h.minZ + 1e-6 && p.z >= h.minZ - margin && move.z > 0) move.z = 0;
+    if (inX && _isExit(b, h, H_MAXZ) && p.z >= h.maxZ - 1e-6 && p.z <= h.maxZ + margin && move.z < 0) move.z = 0;
+  }
   return move;
+}
+
+// ------------------------------------------------------------------ crossfire & passing lanes
+
+/**
+ * How well a thrower at P catches enemy E in a crossfire with the ball holder H: (1 - cos angle(E->H, E->P)) / 2.
+ * 1 = directly opposite the holder (E cannot face both), 0 = same side as the holder, 0.5 = at 90 degrees.
+ */
+export function crossfireScore(ex, ez, hx, hz, px, pz) {
+  const ax = hx - ex, az = hz - ez, bx = px - ex, bz = pz - ez;
+  const la = Math.hypot(ax, az), lb = Math.hypot(bx, bz);
+  if (la < 1e-6 || lb < 1e-6) return 0.5;
+  return (1 - clamp((ax * bx + az * bz) / (la * lb), -1, 1)) * 0.5;
+}
+
+function _distToSeg(px, pz, ax, az, bx, bz) {
+  const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+  const t = l2 > 1e-12 ? clamp(((px - ax) * dx + (pz - az) * dz) / l2, 0, 1) : 0;
+  return Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+}
+
+/**
+ * Interception risk of a lobbed pass from O to R: the number of enemies (flat [x0, z0, x1, z1, ...], n of them) within
+ * `radius` of the first or last `lowFrac` of the path, where the ball is still low enough to be caught. An enemy
+ * standing under the middle of the lob cannot reach it.
+ */
+export function passLaneRisk(ox, oz, rx, rz, enemiesXZ, n, radius = 1.2, lowFrac = 0.2) {
+  const dx = rx - ox, dz = rz - oz;
+  const ax = ox + dx * lowFrac, az = oz + dz * lowFrac, bx = rx - dx * lowFrac, bz = rz - dz * lowFrac;
+  let risk = 0;
+  for (let i = 0; i < n; i++) {
+    const ex = enemiesXZ[i * 2], ez = enemiesXZ[i * 2 + 1];
+    if (_distToSeg(ex, ez, ox, oz, ax, az) <= radius || _distToSeg(ex, ez, bx, bz, rx, rz) <= radius) risk++;
+  }
+  return risk;
 }
 
 /**

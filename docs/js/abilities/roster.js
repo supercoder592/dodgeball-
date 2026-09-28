@@ -2,6 +2,13 @@
 // Hero roster (data-driven, kernel). Every number from the design document lives here. Ability behaviour classes
 // are registered by id in abilities/heroes/*.js; `params` override each class's static defaults.
 // Avatars: Microsoft Rocketbox realistic humans (MIT), converted by Tools/web/build_assets.py.
+// Single-ball rules (4v4: 3 infield + 1 starting outfielder, ONE ball):
+//   * No ability creates a second dodgeball. The former "ability ball" skills (Supersonic Meteor, Hyperbeam
+//     Transpierce, Glacier Freeze, Glue Trap Ball) EMPOWER the ball in the caster's hand: requiresBall + aiHint
+//     HOLDING_BALL (HUD: NEED A BALL without it).
+//   * usableFromOutfield: the starting outfielder (元外野) stays out all round, so every ability whose effect makes
+//     sense from the U outfield (empowered throws, global / team-wide effects) is castable there; body-bound defensive
+//     or infield-positional ones (dodges, swaps, tackles, the turret, the magnet, clones that follow you) are not.
 // ---------------------------------------------------------------------------------------------------------------
 import { SLOT, AI_HINT } from './abilityBase.js';
 import { DEFAULT_MAX_HP, THICK_HIDE_MAX_HP, IRON_MITTS_MULTIPLIER } from '../core/constants.js';
@@ -38,11 +45,11 @@ export const HEROES = [
         'Charging a throw adds up to +50% ball velocity and +20% ball size over 2 s.', '蓄力 2 秒內，球速最多 +50%、球體 +20%。',
         { params: { maxSpeedBonus: 0.5, maxRadiusBonus: 0.2, fullTime: 2 } }),
       skill: ab('rayne.supersonic_meteor', SLOT.SKILL, 'Supersonic Meteor', '超音速隕石',
-        'Hurls a fire-infused fastball; on impact a 3 m shockwave knocks nearby enemies back.', '投出火焰快速球，命中時產生 3 公尺衝擊波擊退周圍敵人。',
-        { cooldown: 10, aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 0.8, params: { speedMul: 1.6, gravityScale: 0.3, shockwaveRadius: 3, knockback: 7, coreStun: 0.35 } }),
+        'Throw the ball in your hand as a fire-infused fastball; on impact a 3 m shockwave knocks nearby enemies back.', '把手中的球化為火焰快速球投出，命中時產生 3 公尺衝擊波擊退周圍敵人。',
+        { cooldown: 10, requiresBall: true, usableFromOutfield: true, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 0.8, params: { speedMul: 1.6, gravityScale: 0.3, shockwaveRadius: 3, knockback: 7, coreStun: 0.35 } }),
       ultimate: ab('rayne.hyperbeam_transpierce', SLOT.ULTIMATE, 'Hyperbeam Transpierce', '極光貫穿',
-        'An unblockable beam-ball that pierces every enemy in its path.', '無法阻擋的光束球，貫穿路徑上所有敵人。',
-        { aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 1, params: { speedMul: 2.2, radiusMul: 1.3 } }),
+        'Throw the ball in your hand as an unblockable beam that pierces every enemy in its path.', '把手中的球化為無法阻擋的光束投出，貫穿路徑上所有敵人。',
+        { requiresBall: true, usableFromOutfield: true, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 1, params: { speedMul: 2.2, radiusMul: 1.3 } }),
     },
   },
   {
@@ -57,8 +64,8 @@ export const HEROES = [
         'Summons 2 clones that mirror your throws and catches; they vanish when hit.', '召喚 2 個同步投接球動作的分身，被球擊中即消失。',
         { cooldown: 12, duration: 6, aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 0.6, params: { count: 2, spacing: 1.4 } }),
       ultimate: ab('shadow.mirage_formation', SLOT.ULTIMATE, 'Mirage Formation', '海市蜃樓陣',
-        'Clones every living teammate for 5 s, obscuring the real targets.', '5 秒內為所有存活隊友製造分身，混淆真正的目標。',
-        { duration: 5, aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { clonesPerPlayer: 2, shuffleInterval: 1.2 } }),
+        'Clones every living infield teammate for 5 s, obscuring the real targets.', '5 秒內為所有內場存活隊友製造分身，混淆真正的目標。',
+        { duration: 5, usableFromOutfield: true, aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { clonesPerPlayer: 2, shuffleInterval: 1.2 } }),
     },
   },
   {
@@ -71,10 +78,10 @@ export const HEROES = [
         'Silent movement and no mini-map ping for enemies.', '移動無聲，且不會出現在敵方小地圖上。', {}),
       skill: ab('gale.optical_camouflage', SLOT.SKILL, 'Optical Camouflage', '光學迷彩',
         'Cloak for 4 s (+20% speed). A throw from stealth gains +30% speed and reveals you.', '隱身 4 秒（移速 +20%），隱身中投球球速 +30% 並現形。',
-        { cooldown: 14, duration: 4, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 0.7, params: { haste: 0.2, throwBonus: 0.3 } }),
+        { cooldown: 14, duration: 4, usableFromOutfield: true, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 0.7, params: { haste: 0.2, throwBonus: 0.3 } }),
       ultimate: ab('gale.shadow_strike', SLOT.ULTIMATE, 'Shadow Strike', '暗影突襲',
-        'Teleport directly behind the nearest unheld ball and pick it up.', '瞬間移動到最近一顆無人持有的球後方並撿起。',
-        { aiHint: AI_HINT.BALLS_LOOSE, aiWeight: 0.8 }),
+        'Teleport behind the nearest loose ball on your side and pick it up.', '瞬間移動到我方區域內最近一顆無人持有的球後方並撿起。',
+        { usableFromOutfield: true, aiHint: AI_HINT.BALLS_LOOSE, aiWeight: 0.8, params: { zoneExpansion: 0.55 } }),
     },
   },
   {
@@ -86,11 +93,11 @@ export const HEROES = [
       passive: ab('bear.iron_mitts', SLOT.PASSIVE, 'Iron Mitts', '鐵手套',
         'Perfect Catch window +50% (0.225 s instead of 0.15 s).', '完美接球判定時間 +50%（0.225 秒）。', { params: { multiplier: IRON_MITTS_MULTIPLIER } }),
       skill: ab('bear.magnetic_pull', SLOT.SKILL, 'Magnetic Pull', '磁力牽引',
-        'A 5 m magnetic field pulls any flying ball into your hands for 1.5 s.', '1.5 秒內，5 公尺磁場把飛行中的球吸到手中。',
+        'A 5 m magnetic field pulls the flying enemy ball into your hands for 1.5 s.', '1.5 秒內，5 公尺磁場把飛行中的敵球吸到手中。',
         { cooldown: 15, duration: 1.5, aiHint: AI_HINT.THREATENED, aiWeight: 0.9, params: { radius: 5, pull: 60 } }),
       ultimate: ab('bear.aegis_barrier', SLOT.ULTIMATE, 'Aegis Barrier', '神盾屏障',
-        'Deploys a large energy shield at center court blocking all enemy throws for 6 s.', '在中場展開巨型能量護盾，6 秒內擋下所有敵方投球。',
-        { duration: 6, aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { height: 3.2 } }),
+        'Deploys a large energy shield at center court blocking every throw from the enemy court for 6 s.', '在中場展開巨型能量護盾，6 秒內擋下敵方內場的所有投球。',
+        { duration: 6, usableFromOutfield: true, aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { height: 3.2, sideOverhang: 0 } }),
     },
   },
   {
@@ -105,8 +112,8 @@ export const HEROES = [
         'Charge forward, deflect balls in your path and throw any enemy you hit into the outfield.', '向前衝撞，彈開路徑上的球，撞到的敵人直接被丟進外場。',
         { cooldown: 11, duration: 0.55, interruptible: false, aiHint: AI_HINT.THREATENED, aiWeight: 0.6, params: { speed: 11, deflectRadius: 1.3, grabRadius: 1, crossLine: 2 } }),
       ultimate: ab('gouki.earthquake_slam', SLOT.ULTIMATE, 'Earthquake Slam', '震地猛擊',
-        'Slam the ground: every grounded enemy is forced to jump and drops held balls.', '重擊地面，所有著地的敵人被迫跳起並掉落手中的球。',
-        { aiHint: AI_HINT.ANYTIME, aiWeight: 0.8, params: { jumpSpeed: 5 } }),
+        'Slam the ground: every grounded infield enemy is forced to jump and fumbles the ball.', '重擊地面，所有著地的內場敵人被迫跳起並掉落手中的球。',
+        { usableFromOutfield: true, aiHint: AI_HINT.ANYTIME, aiWeight: 0.8, params: { jumpSpeed: 5 } }),
     },
   },
   {
@@ -116,13 +123,13 @@ export const HEROES = [
     bio: 'If it moves, he can build a machine to throw it.', bioZh: '只要會動的東西，他都能造台機器把它丟出去。',
     abilities: {
       passive: ab('screws.magnetic_recycle', SLOT.PASSIVE, 'Magnetic Recycle', '磁力回收',
-        'Balls dropped on an elimination slowly roll back toward your territory.', '有人被淘汰時掉落的球會慢慢滾回己方場地。', { params: { radius: 3, force: 1.5, duration: 4 } }),
+        'The ball dropped on an elimination slowly rolls back toward your territory.', '有人被淘汰時掉落的球會慢慢滾回己方區域。', { params: { radius: 3, force: 1.5, duration: 4 } }),
       skill: ab('screws.glue_trap_ball', SLOT.SKILL, 'Glue Trap Ball', '黏膠陷阱球',
-        'A viscous ball that leaves a 4 s puddle slowing enemies by 60%.', '黏稠的球，命中或落地產生持續 4 秒、減速 60% 的黏膠。',
-        { cooldown: 10, aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 0.6, params: { puddleRadius: 2, puddleDuration: 4, slow: 0.6, speedMul: 0.9 } }),
+        'Throw the ball in your hand as a viscous glue ball that leaves a 4 s puddle slowing enemies by 60%.', '把手中的球化為黏膠球投出，命中或落地產生持續 4 秒、減速 60% 的黏膠。',
+        { cooldown: 10, requiresBall: true, usableFromOutfield: true, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 0.6, params: { puddleRadius: 2, puddleDuration: 4, slow: 0.6, speedMul: 0.9 } }),
       ultimate: ab('screws.auto_turret', SLOT.ULTIMATE, 'Auto-Turret', '自動砲台',
-        'Deploys a turret for 8 s that collects balls within 4 m and fires at the nearest enemy every 1.5 s.', '部署 8 秒自動砲台，收集 4 公尺內的球，每 1.5 秒射擊最近的敵人。',
-        { duration: 8, aiHint: AI_HINT.BALLS_LOOSE, aiWeight: 0.8, params: { collectRadius: 4, fireInterval: 1.5, capacity: 3, shotSpeedKmh: 95 } }),
+        'Deploys a turret for 8 s that sucks up the ball within 4 m on your side and fires it at the nearest enemy every 1.5 s.', '部署 8 秒自動砲台，吸入己方場地 4 公尺內的球，每 1.5 秒射向最近的敵人。',
+        { duration: 8, aiHint: AI_HINT.BALLS_LOOSE, aiWeight: 0.8, params: { collectRadius: 4, fireInterval: 1.5, capacity: 1, shotSpeedKmh: 95 } }),
     },
   },
   {
@@ -132,13 +139,13 @@ export const HEROES = [
     bio: 'The ball was in his hand. Then it was not. Then you were out.', bioZh: '球本來在他手上，接著不見了，然後你就出局了。',
     abilities: {
       passive: ab('houdini.hat_trick', SLOT.PASSIVE, 'Hat Trick', '帽子戲法',
-        'Pass teleports the held ball straight into the nearest teammate\'s hands.', '傳球時，球直接瞬移到最近隊友手中。', {}),
+        'Pass teleports the held ball straight into the chosen teammate\'s hands.', '傳球時，球直接瞬移到傳球對象手中。', {}),
       skill: ab('houdini.swap_places', SLOT.SKILL, 'Swap Places', '乾坤大挪移',
         'Target an enemy and swap positions after a 0.5 s channel.', '鎖定敵人，引導 0.5 秒後交換位置。',
         { cooldown: 16, castTime: 0.5, aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 0.4, params: { range: 25, stun: 0.3 } }),
       ultimate: ab('houdini.grand_vanish', SLOT.ULTIMATE, 'Grand Vanish', '大消失術',
-        'Enemy-held balls vanish for 4 s; every free ball teleports to your team\'s feet.', '敵人手上的球消失 4 秒，場上所有自由球傳送到隊友腳邊。',
-        { aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { vanishTime: 4 } }),
+        'The enemy-held ball vanishes and reappears at your team\'s feet; a loose ball on the enemy side teleports to you.', '敵人手上的球消失並出現在我方腳邊；敵方區域的自由球瞬移到你身邊。',
+        { usableFromOutfield: true, aiHint: AI_HINT.LOSING, aiWeight: 0.9, params: { vanishTime: 2.5, aiMinEnemyHeld: 1 } }),
     },
   },
   {
@@ -150,11 +157,11 @@ export const HEROES = [
       passive: ab('elsa.frost_trail', SLOT.PASSIVE, 'Frost Trail', '霜之軌跡',
         'Thrown balls leave ice trails that give allies +20% movement speed.', '投出的球留下冰徑，隊友踩上移速 +20%。', { params: { haste: 0.2, segmentLife: 3, spacing: 0.9, width: 0.9 } }),
       skill: ab('elsa.glacier_freeze', SLOT.SKILL, 'Glacier Freeze', '冰河凍結',
-        'A freezing ball: enemies hit are frozen for 2.5 s (no moving or catching); a second hit eliminates.', '冰凍球：被擊中者冰凍 2.5 秒（無法移動或接球），再被擊中即淘汰。',
-        { cooldown: 13, aiHint: AI_HINT.ENEMY_IN_RANGE, aiWeight: 0.8, params: { freezeTime: 2.5, speedMul: 1.15 } }),
+        'Throw the ball in your hand as a freezing ball: enemies hit are frozen for 2.5 s (no moving or catching); a second hit eliminates.', '把手中的球化為冰凍球投出：被擊中者冰凍 2.5 秒（無法移動或接球），再被擊中即淘汰。',
+        { cooldown: 13, requiresBall: true, usableFromOutfield: true, aiHint: AI_HINT.HOLDING_BALL, aiWeight: 0.8, params: { freezeTime: 2.5, speedMul: 1.15 } }),
       ultimate: ab('elsa.absolute_zero', SLOT.ULTIMATE, 'Absolute Zero', '絕對零度',
         'Freezes the entire enemy court for 6 s: heavy sliding inertia and no dodges.', '冰封整個敵方場地 6 秒：強烈滑動慣性且無法閃避。',
-        { duration: 6, aiHint: AI_HINT.ANYTIME, aiWeight: 0.8, params: { slippery: 0.85 } }),
+        { duration: 6, usableFromOutfield: true, aiHint: AI_HINT.ANYTIME, aiWeight: 0.8, params: { slippery: 0.85 } }),
     },
   },
   {
@@ -180,13 +187,13 @@ export const HEROES = [
     bio: 'Time is just another ball. She catches it too.', bioZh: '時間只是另一顆球，她也接得住。',
     abilities: {
       passive: ab('chrono.delayed_impact', SLOT.PASSIVE, 'Delayed Impact', '延遲衝擊',
-        'Elimination is delayed 2 s; if a teammate catches a ball in that window, it is cancelled.', '被淘汰延後 2 秒，期間隊友接到球即取消淘汰。', { params: { delay: 2 } }),
+        'Elimination is delayed 2 s; if a teammate catches a ball (or the rebound off you) or lands a hit in that window, it is cancelled.', '被淘汰延後 2 秒，期間隊友接到球（或接住從你身上彈開的球）或命中敵人即取消淘汰。', { params: { delay: 2 } }),
       skill: ab('chrono.stasis_field', SLOT.SKILL, 'Stasis Field', '靜止力場',
-        'Freezes a flying enemy ball mid-air for 2 s so allies can snatch it.', '把飛行中的敵球凍結在半空 2 秒，讓隊友搶走。',
-        { cooldown: 12, aiHint: AI_HINT.THREATENED, aiWeight: 0.9, params: { duration: 2, range: 18 } }),
+        'Freezes the flying enemy ball mid-air for 2 s so allies can snatch it.', '把飛行中的敵球凍結在半空 2 秒，讓隊友搶走。',
+        { cooldown: 12, usableFromOutfield: true, aiHint: AI_HINT.THREATENED, aiWeight: 0.9, params: { duration: 2, range: 18 } }),
       ultimate: ab('chrono.temporal_reset', SLOT.ULTIMATE, 'Temporal Reset', '時間重置',
         'Rewinds a 5x5 m zone\'s ball trajectories and player positions by 3 s.', '把 5x5 公尺區域內的球軌跡與球員位置倒轉 3 秒。',
-        { aiHint: AI_HINT.THREATENED, aiWeight: 0.7, params: { size: 5, seconds: 3, range: 25 } }),
+        { usableFromOutfield: true, aiHint: AI_HINT.THREATENED, aiWeight: 0.7, params: { size: 5, seconds: 3, range: 25 } }),
     },
   },
 ];

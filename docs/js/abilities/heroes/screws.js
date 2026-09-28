@@ -1,23 +1,27 @@
 // ---------------------------------------------------------------------------------------------------------------
 // Screws (工程師 Engineer) - abilities.
-//   PASSIVE  Magnetic Recycle (磁力回收)  For 4 s after any elimination, free balls within 3 m of that spot roll back
-//                                         toward Screws' half (a registered ball field + per-frame fallback).
-//   SKILL    Glue Trap Ball   (黏膠陷阱球) A viscous ability ball (speed x0.9, gravity x0.8); wherever it hits (player,
-//                                         floor, wall, a catch or a block) it leaves a 2 m / 4 s glue puddle slowing
-//                                         enemies by 60%. CD 10 s.
-//   ULTIMATE Auto-Turret      (自動砲台)  8 s tripod turret 1.5 m ahead inside his zone: collects free balls within
-//                                         4 m (hopper, up to 3) and fires them at the nearest enemy every 1.5 s.
+//   PASSIVE  Magnetic Recycle (磁力回收)  For 4 s after any elimination, the free ball within 3 m of that spot rolls
+//                                         back toward Screws' half (a registered ball field + per-frame fallback) -
+//                                         unless it already rests in one of his team's zones (infield or U outfield).
+//   SKILL    Glue Trap Ball   (黏膠陷阱球) The HELD match ball is coated in glue and thrown (speed x0.9, gravity x0.8);
+//                                         wherever it hits (player, floor, wall, a catch or a block) it leaves a
+//                                         2 m / 4 s glue puddle slowing enemies by 60%. Needs the ball. CD 10 s.
+//   ULTIMATE Auto-Turret      (自動砲台)  8 s tripod turret 1.5 m ahead inside his zone: sucks up the free ball within
+//                                         4 m that rests in Screws' OWN infield (hopper, 1) and fires it at the nearest
+//                                         enemy every 1.5 s. A stored ball is in his team's custody (possession clock
+//                                         paused); with nothing to shoot at for a while it is dropped again.
 // World objects: ../shared/screwsGluePuddle.js, ../shared/screwsAutoTurret.js.
 // ---------------------------------------------------------------------------------------------------------------
 import * as THREE from 'three';
 import { game } from '../../game.js';
 import { EV } from '../../core/events.js';
 import { AbilityBase, registerAbility } from '../abilityBase.js';
-import { throwAbilityBall, clampToPlayerZone } from '../abilityUtil.js';
+import { clampToPlayerZone } from '../abilityUtil.js';
+import { throwHeldBall } from '../shared/empowerThrow.js';
 import { depthIntoOwnHalf } from '../shared/screwsGadgetMath.js';
 import {
   BALL, FieldStamp, matchBalls, setBallVelocity, registerBallField, unregisterBallField, planarForward, chestOf, fx,
-  sfx, isInfield, hasStatus, teamColor,
+  sfx, hasStatus, teamColor, inTeamZone, inTeamInfield,
 } from '../shared/screwsGadgetKit.js';
 import { ScrewsGluePuddle, GLUE_DEFAULTS } from '../shared/screwsGluePuddle.js';
 import { ScrewsAutoTurret as TurretUnit, TURRET_DEFAULTS } from '../shared/screwsAutoTurret.js';
@@ -86,6 +90,7 @@ export class ScrewsMagneticRecycle extends AbilityBase {
       for (let i = 0; i < balls.length; i++) {
         const b = balls[i];
         if (!b || b.state !== BALL.FREE || b.isAbilityBall) continue;
+        if (inTeamZone(b.position, this.owner.team)) continue; // already ours: never drag it away from our outfielder
         for (const z of this._zones) {
           const dx = b.position.x - z.x, dz = b.position.z - z.z;
           if (dx * dx + dz * dz <= r2) {
@@ -115,13 +120,17 @@ export class ScrewsMagneticRecycle extends AbilityBase {
     if (!this._roll(ball, dt)) this._tracked.delete(ball);
   }
 
-  /** Accelerates a rolling ball toward Screws' half. @returns {boolean} false once it has arrived */
+  /**
+   * Accelerates a rolling ball toward Screws' half. @returns {boolean} false once it has arrived - or once it rests in
+   * any of his team's zones (the U outfield around the enemy half included: his outfielder retrieves it there).
+   */
   _roll(ball, dt) {
     const court = game.court;
     if (!court) return false;
     const p = this.params;
     const side = court.sideSign(this.owner.team);
     if (depthIntoOwnHalf(side, ball.position.z) >= p.arriveDepth) return false;
+    if (inTeamZone(ball.position, this.owner.team)) return false;
     if (ball.position.y > court.floorY + (ball.radius || 0.105) + p.rollHeight) return true; // airborne: wait for it to land
     const lim = court.halfW - 1;
     _dir.set(Math.max(-lim, Math.min(lim, ball.position.x)) - ball.position.x, 0, side * court.halfL * p.targetDepthFrac - ball.position.z);
@@ -183,20 +192,26 @@ export class ScrewsGlueTrapBall extends AbilityBase {
     aiRange: 16,             // m
   };
 
-  onInitialize() { this._puddles = new Set(); }
+  onInitialize() { this._puddles = new Set(); this._refund = false; }
 
   onEquip() { this.listen(EV.RoundEnded, () => this._clearPuddles()); }
 
+  /** Throws the HELD match ball coated in glue (roster requiresBall). Throw animation/event come from Combat. */
   onCast() {
     const o = this.owner, p = this.params;
     const target = (o.combat && o.combat.currentTarget) || game.nearestEnemy(o, o.position, 30);
-    const ball = throwAbilityBall(o, {
+    const ball = throwHeldBall(o, {
       style: 'glue', speedMul: p.speedMul, gravityScale: p.gravityScale, payload: new GluePayload(this), target,
     });
-    planarForward(o, _f);
-    o.avatar?.playThrow?.(_f);
+    if (!ball) this._refund = true; // the ball left his hand before the release: no cooldown
     chestOf(o, _p);
     sfx(ball ? 'glueThrow' : 'abilityFail', _p, 0.9, 1);
+  }
+
+  onCooldown() {
+    if (!this._refund) return;
+    this._refund = false;
+    this.resetCooldown();
   }
 
   /** Called by the payload: creates a puddle on the floor below `pos` (inside the arena). */
@@ -217,7 +232,7 @@ export class ScrewsGlueTrapBall extends AbilityBase {
     return puddle;
   }
 
-  onRoundReset() { this._clearPuddles(); }
+  onRoundReset() { this._clearPuddles(); this._refund = false; }
 
   onUnequip() { this._clearPuddles(); }
 
@@ -226,14 +241,14 @@ export class ScrewsGlueTrapBall extends AbilityBase {
     this._puddles.clear();
   }
 
-  /** Throw it at a grounded enemy in range who is not already stuck. */
+  /** Only with the ball in hand (the skill IS the throw): at an enemy in range who is not already stuck. */
   evaluateAI(ctx) {
-    if (!ctx || !isInfield(this.owner)) return 0;
+    if (!ctx || !ctx.holdingBall) return 0;
     const w = this.def.aiWeight ?? 0.6;
     const e = ctx.nearestEnemy;
     if (!e || !(ctx.nearestEnemyDistance < this.params.aiRange)) return 0;
     if (hasStatus(e, 'slow')) return w * 0.3;
-    return ctx.holdingBall ? w * 0.7 : w; // with a ball in hand a real throw competes
+    return w;
   }
 }
 
@@ -274,19 +289,24 @@ export class ScrewsAutoTurret extends AbilityBase {
     this.turret = null;
   }
 
-  /** Worth more the more loose balls it can feed on; useless without enemies on the court. */
+  /**
+   * Single ball: worth it when the ball lies loose in Screws' own half - high when the turret will reach it at once,
+   * lower when it lies elsewhere in his half. Never when it is held, flying or in an enemy zone (the turret only
+   * collects from his own infield), nor without enemies on the court.
+   */
   evaluateAI(ctx) {
     const o = this.owner;
-    if (!ctx || !isInfield(o) || !(ctx.enemiesInfield > 0)) return 0;
+    if (!ctx || !(ctx.enemiesInfield > 0) || o.zone !== 'infield') return 0;
     const w = this.def.aiWeight ?? 0.8;
     const reach = this.params.collectRadius + this.params.placeDistance + 1;
-    let free = 0;
     const balls = matchBalls();
+    let best = 0;
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
-      if (b && b.state === BALL.FREE && b.position.distanceToSquared(o.position) <= reach * reach) free++;
+      if (!b || b.state !== BALL.FREE || b.isAbilityBall || !inTeamInfield(b.position, o.team)) continue;
+      best = Math.max(best, b.position.distanceToSquared(o.position) <= reach * reach ? 0.85 : 0.5);
     }
-    return Math.min(1, w * (0.35 + 0.22 * Math.min(3, free)));
+    return Math.min(1, w * best);
   }
 }
 

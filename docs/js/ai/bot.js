@@ -15,6 +15,18 @@
 //                   through buildAbilityContext() + AbilityBase.evaluateAI() against a threshold.
 //   execution     : steering (destination, strafe, spacing, holder avoidance, separation, confinement), aim, and the
 //                   human-like button sequences.
+// Single-ball 4v4 (3 infield + 1 starting outfielder, the U outfield surrounds the opponent's half):
+//   ball situation: every decision reads who owns the ONE ball (botWorld.ballSituation: holder, dead-ball zone owner,
+//                   where a live throw lands). Only the zone owner retrieves a loose ball; nobody chases into an
+//                   enemy zone; an unreachable ball is met where the ball boy will put it.
+//   our ball      : the holder weighs its own shot against every receiver (crossfire opportunity, lane risk, the
+//                   outfielder's pass call, ping-pong penalty); outfielders flank along the U (court.outfieldWaypoint)
+//                   to the spot opposite the holder; infielders spread and watch the target side.
+//   their ball    : infielders drop deeper, off the sidelines where the enemy U stands, facing the holder (and the
+//                   receiver of a live enemy pass); outfielders shadow the enemies' backs; enemy passes may be
+//                   intercepted (profile.interceptChance).
+//   shot clock    : the holder always releases before Match.possession runs out (_forceRelease: throw, else the
+//                   safest pass, else a dump throw into the enemy half); the server holds a human-like beat.
 // Randomness is seeded per bot (derived from game.rng unless a seed is given), so ?seed=N matches are reproducible.
 // Time: everything runs on the scaled gameplay clock (game.time.now), so hitstop and pause freeze the bots too.
 // Hot path is allocation-free (module-scope temporaries, double-buffered intent objects, pooled perception).
@@ -29,12 +41,14 @@ import { BOT_DIFFICULTY, DIFFICULTY_IDS, createProfile, heroTraits, normalizeDif
 import {
   DEG2RAD, clamp, clamp01, lerp, inverseLerp, moveTowards, jitter, randomSign, perlin1D, planarDistance,
   planarAngleDeg, shrinkBounds, copyBounds, clampPlanar, planarDistanceToBounds, edgeProximity, keepInside, seek,
-  timeToCover, interceptPoint, planCatchLead, chooseSidestep, weightedPick,
+  timeToCover, interceptPoint, planCatchLead, chooseSidestep, weightedPick, crossfireScore, passLaneRisk,
 } from './aiMath.js';
 import {
   STATE, BALL_STATE, CENTER_Z, stateIs, hasStatus, holdsBall, isCharging, bodyRadius, bodyHeight, chestOf, forwardX,
   forwardZ, sideSign, movementProfile, combatProfile, perfectWindowOf, isPerceivable, isCommitted, countTargetable,
   roundTimeLeft, anyTeammatePending, confinementOf, scoreTarget, hasLineOfSight, hittablePosition, estimateThrowSpeed,
+  matchBall, possessionLeft, predictRestPoint, zoneAt, outfieldParam, outfieldPoint, outfieldWaypoint,
+  outfieldPathLength, ballSituation, createBallSituation,
 } from './botWorld.js';
 import { BotPerception, BotThreat, predictBallImpact, gatherIncoming } from './perception.js';
 
@@ -83,6 +97,33 @@ const _pushB = new THREE.Vector3();
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _ctxHit = new THREE.Vector3();
+const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
+const _zone = { team: -1, zone: null };
+const _zone2 = { team: -1, zone: null };
+
+/**
+ * Where a live pass drops through height `y` on its way down (planar point into `out`, y kept), stepping the
+ * ballistic flight at 1/60 s for up to 3 s. @returns {number} seconds until then, or -1 (never / already past).
+ */
+function passArrival(ball, y, out) {
+  const p = ball.position, v = ball.velocity;
+  if (!v) return -1;
+  const g = 9.81 * (Number.isFinite(ball.gravityScale) ? ball.gravityScale : 1);
+  for (let t = 1 / 60; t <= 3; t += 1 / 60) {
+    const by = p.y + v.y * t - 0.5 * g * t * t;
+    if (by <= y && v.y - g * t < 0) {
+      out.set(p.x + v.x * t, y, p.z + v.z * t);
+      return t;
+    }
+  }
+  return -1;
+}
+/** Flat [x0, z0, x1, z1, ...] enemy positions for passLaneRisk (at most 8 enemies). */
+const _enemyXZ = new Float64Array(16);
+/** Sampled flank candidates (u, score) of _flankU. */
+const _flankU = new Float64Array(32);
+const _flankS = new Float64Array(32);
 const _ZERO = new THREE.Vector3();
 const _ctxIncoming = [];
 
@@ -104,8 +145,36 @@ function _broadcast(method, payload) {
     try { bot[method](payload); } catch (e) { console.error(`[ai] Bot.${method} threw`, e); }
   }
 }
+/**
+ * Per-team coordination board (index = TEAM): the outfielder currently calling for the ball (pass call) and the last
+ * passer (anti ping-pong). Reset every round.
+ */
+const _teamBoard = [
+  { caller: null, callScore: 0, callUntil: -Infinity, lastPasser: null, lastPassAt: -Infinity },
+  { caller: null, callScore: 0, callUntil: -Infinity, lastPasser: null, lastPassAt: -Infinity },
+];
+function _board(team) { return team === 0 || team === 1 ? _teamBoard[team] : null; }
+function _resetBoards() {
+  for (let i = 0; i < _teamBoard.length; i++) {
+    const b = _teamBoard[i];
+    b.caller = null; b.callScore = 0; b.callUntil = -Infinity; b.lastPasser = null; b.lastPassAt = -Infinity;
+  }
+}
+function _onBallPassedHub(e) {
+  const from = e && e.from;
+  const b = from ? _board(from.team) : null;
+  if (b) { b.lastPasser = from; b.lastPassAt = game.time.now; if (b.caller === e.to) b.callUntil = -Infinity; }
+  _broadcast('_onBallPassed', e);
+}
+// Event names of the single-ball rules (core/events.js); string fallbacks keep the hub working on older kernels.
+const EV_BALL_AWARDED = EV.BallAwarded || 'ball:awarded';
+const EV_POSSESSION_CHANGED = EV.PossessionChanged || 'ball:possession';
+
 const _handlers = [
-  [EV.RoundStarted, (e) => _broadcast('_onRoundStarted', e)],
+  [EV.RoundStarted, (e) => { _resetBoards(); _broadcast('_onRoundStarted', e); }],
+  [EV.BallPassed, _onBallPassedHub],
+  [EV_BALL_AWARDED, (e) => _broadcast('_onBallAwarded', e)],
+  [EV_POSSESSION_CHANGED, (e) => _broadcast('_onPossessionChanged', e)],
   [EV.RoundEnded, (e) => _broadcast('_onRoundEnded', e)],
   [EV.DangerSense, (e) => _broadcast('_onDangerSense', e)],
   [EV.AbilityFailed, (e) => _broadcast('_onAbilityFailed', e)],
@@ -134,6 +203,8 @@ function createIntent() {
     move: new THREE.Vector3(), aimDir: new THREE.Vector3(0, 0, 1), aimPoint: new THREE.Vector3(), target: null,
     sprint: false, jump: false, slide: false, throwPressed: false, throwHeld: false, throwReleased: false,
     catchPressed: false, pass: false, pickup: false, skill: false, ultimate: false, cycleTarget: false,
+    /** Teammate the pass button should go to (Combat.tryPass honours it; null = the combat's own pick). */
+    passTarget: null,
     /** Additive: lets other systems tell bot intents from human ones. */
     isBot: true,
   };
@@ -142,6 +213,7 @@ function createIntent() {
 function resetIntent(intent, player) {
   intent.move.set(0, 0, 0);
   intent.target = null;
+  intent.passTarget = null;
   intent.sprint = intent.jump = intent.slide = false;
   intent.throwPressed = intent.throwHeld = intent.throwReleased = false;
   intent.catchPressed = intent.pass = intent.pickup = intent.skill = intent.ultimate = intent.cycleTarget = false;
@@ -167,6 +239,9 @@ export function createAbilityContext() {
     // Additive extras for hero-specific evaluateAI() overrides.
     incomingSpeedKmh: 0, teammatePending: false, hpFraction: 1, nearestFreeBall: null, nearestFreeBallDistance: Infinity,
     looseBalls: 0, isOutfield: false,
+    // Single ball: who has it.
+    teamHasBall: false, enemyHasBall: false, teammateHoldingBall: false, ballInOwnZone: false,
+    eliminatedTeammatesOutfield: 0,
   };
 }
 
@@ -189,6 +264,8 @@ export function buildAbilityContext(player, out = null, opts = null) {
   ctx.holdingBall = false; ctx.freeBallsNearby = 0; ctx.ultCharge = 0; ctx.timeLeft = roundTimeLeft();
   ctx.teammatePending = false; ctx.hpFraction = 1; ctx.nearestFreeBall = null; ctx.nearestFreeBallDistance = Infinity;
   ctx.looseBalls = 0; ctx.isOutfield = false;
+  ctx.teamHasBall = false; ctx.enemyHasBall = false; ctx.teammateHoldingBall = false; ctx.ballInOwnZone = false;
+  ctx.eliminatedTeammatesOutfield = 0;
   if (!player || !player.position) return ctx;
 
   const cloakR = opts && Number.isFinite(opts.cloakDetectionRadius) ? opts.cloakDetectionRadius : DEFAULT_CLOAK_RADIUS;
@@ -205,7 +282,10 @@ export function buildAbilityContext(player, out = null, opts = null) {
       if (d < ctx.nearestEnemyDistance) { ctx.nearestEnemyDistance = d; ctx.nearestEnemy = p; }
     } else if (p.team === player.team) {
       if (p.isTargetable) ctx.alliesInfield++;
-      if (p !== player && p.zone === ZONE.OUTFIELD) ctx.teammatesOutfield++;
+      if (p !== player && p.zone === ZONE.OUTFIELD) {
+        ctx.teammatesOutfield++;
+        if (!p.isStartingOutfielder) ctx.eliminatedTeammatesOutfield++;
+      }
     }
   }
 
@@ -241,6 +321,18 @@ export function buildAbilityContext(player, out = null, opts = null) {
       const d2 = b.position.distanceToSquared(pos);
       if (d2 <= r2) ctx.freeBallsNearby++;
       if (d2 < ctx.nearestFreeBallDistance * ctx.nearestFreeBallDistance) { ctx.nearestFreeBallDistance = Math.sqrt(d2); ctx.nearestFreeBall = b; }
+    }
+  }
+  const mb = matchBall();
+  if (mb) {
+    const h = mb.state === BALL_STATE.HELD ? mb.holder : null;
+    if (h) {
+      ctx.teamHasBall = h.team === player.team;
+      ctx.enemyHasBall = game.areEnemies(player, h);
+      ctx.teammateHoldingBall = ctx.teamHasBall && h !== player;
+    } else if (mb.state === BALL_STATE.FREE) {
+      const z = zoneAt(mb.position, _zone);
+      ctx.ballInOwnZone = !!z && z.team === player.team;
     }
   }
   return ctx;
@@ -286,10 +378,29 @@ export class Bot {
     // retrieving
     stasisReachHeight: 2.3,    // highest ball (above the feet) that can be snatched from Chrono's stasis
     stasisJumpHeight: 1.9,     // leap for stasis balls higher than this
-    openingRushDuration: 4,    // seconds after RoundStarted of sprinting for the centre-line balls
+    openingRushDuration: 0,    // single ball: no opening rush (one team serves)
     maxChaseTime: 6,           // give up on a ball chased longer than this (ignored for 3 s)
     pickupRepressInterval: 0.2,
     freeBallAwarenessRadius: 8, // freeBallsNearby radius of the ability context
+    pickupZoneReach: 0.55,     // m a ball may lie beyond our confinement and still be ours to pick up (BALL_PHYS)
+    retrieveOwnZoneBonus: 0.3, // retrieve utility bonus while our dead-ball clock is running
+    ballBoyNearRadius: 2,      // outfield retrieval: steer along the U until this close to the ball, then seek
+    // single ball: defending / outfield flanking
+    defendDepthBonus: 1.0,     // m deeper while an enemy infielder holds the ball
+    defendEdgeMargin: 1.4,     // confinement margin while defending (off the sidelines where the enemy U stands)
+    attackDepthBonus: -0.5,    // m shallower while our team has the ball
+    outfielderRepelWeight: 0.35, outfielderRepelRadius: 4,
+    flankSamples: 13, flankRecompute: 0.5, flankHysteresis: 0.08, outfieldLookAhead: 1.6,
+    flankIdealRange: 5, flankRangeSpan: 9, crossfireWeight: 0.55, flankRangeWeight: 0.35, flankTravelWeight: 0.15,
+    outfieldSpacing: 3, outfieldSpacingPenalty: 0.4, behindDistance: 20, outfieldLaneOffset: 0.12,
+    // single ball: passing
+    passCallMinScore: 0.6, passCallDuration: 0.8, passCallBonus: 0.25, pingPongWindow: 2, pingPongPenalty: 0.35,
+    passLaneRisk: 0.3, passLaneRadius: 1.2, passMargin: 0.25, outfieldReceiverBonus: 0.1, infieldReturnBonus: 0.2, outfieldReturnInclination: 0.4,
+    // single ball: shot clock
+    deadlineChargeReserve: 0.6, // s of charge kept in hand beyond possessionSafety before a forced release
+    urgentMargin: 2.5,          // s beyond possessionSafety from which the holder is "urgent"
+    receivedPassDamp: 0.4,      // pass inclination multiplier right after receiving a pass (anti ping-pong)
+    passSetupMin: 0.8, passSetupMax: 1.8, // s an infield holder inclined to pass waits for the flank before shooting
   });
 
   /**
@@ -324,8 +435,12 @@ export class Bot {
     this._pickupPoint = new THREE.Vector3();
 
     this._laneCount = 0;
-    this._conf = { minX: -4, maxX: 4, minZ: -8, maxZ: -1 };
-    this._inner = { minX: -3, maxX: 3, minZ: -7, maxZ: -2 };
+    this._conf = { minX: -4, maxX: 4, minZ: -8, maxZ: -1, hole: null };
+    this._inner = { minX: -3, maxX: 3, minZ: -7, maxZ: -2, hole: null };
+    /** Who owns the one ball (refreshed every decision). */
+    this._sit = createBallSituation(THREE.Vector3);
+    /** Where an awarded / ball-boy ball will reappear for this bot to take (see _onBallAwarded). */
+    this._fetchSpot = new THREE.Vector3();
     this._confTeam = null; this._confZone = null; this._hasConf = false;
 
     this._intents = [createIntent(), createIntent()];
@@ -402,11 +517,15 @@ export class Bot {
     this._nextPickupPressAt = -Infinity;
     this.currentTarget = null; this.currentTargetScore = 0; this._targetClear = false;
     this._decoyFor = null; this.decoyOffset.set(0, 0, 0);
-    this._passReceiver = null; this._passInclination = false; this._nextPassAllowedAt = -Infinity;
+    this._passReceiver = null; this._passInclination = false; this._nextPassAllowedAt = -Infinity; this._receiverValue = 0;
     this._hadBall = false; this._counterAttack = false; this._possessionStart = now;
     this._throwReadyAt = -Infinity; this._lastThrowTime = -Infinity;
     this._lastCatchTime = -Infinity; this._lastCatchPerfect = false;
-    this._openingRushUntil = -Infinity;
+    this._receivedPassAt = -Infinity;
+    this._fetchUntil = -Infinity; this._ballBoy = false;
+    this._outfieldU = -1; this._outfieldUAt = -Infinity; this._outfieldKey = -1;
+    this._declinedPassLaunch = NaN;
+    this._forceReleaseAt = -Infinity;
     this._aggression = this.profile.aggression;
     this.behaviour = BOT_BEHAVIOUR.IDLE;
     for (const k in this.scores) this.scores[k] = 0;
@@ -460,6 +579,7 @@ export class Bot {
     this._trackWindups(now, Math.max(0, dt));
     this._updateThreat(now);
     if (this._forceDecision || now >= this._nextDecisionTime) this._decide(now);
+    this._checkDeadline(now);
     this._execute(intent, now, Math.max(0, dt));
   }
 
@@ -488,17 +608,29 @@ export class Bot {
     if (round !== this._lastRound) { this._lastRound = round; this._startRound(now); }
   }
 
-  /** "GO!": sprint for the centre-line balls after a human-like reaction delay. */
+  /**
+   * "GO!": react after a human-like delay. The server (holding the ball since the pre-round) plays it after a short
+   * beat of its own (serveHoldMin..Max); everybody else takes the posture the ball situation dictates.
+   */
   _startRound(now) {
-    const P = this.profile;
+    const P = this.profile, self = this.player;
     this._resetTransient(now);
     this.claimedBall = null;
-    this._openingRushUntil = now + this.tuning.openingRushDuration;
+    this._fetchUntil = -Infinity;
+    this._outfieldU = -1; this._outfieldUAt = -Infinity;
     const react = Math.max(0.02, jitter(this.rng, P.reactionTime, P.reactionJitter));
     this._nextDecisionTime = now + react;
     this._goReactUntil = now + react;
     this._forceDecision = false;
     this._lastSampleTime = now;
+    const serving = holdsBall(self);
+    this._hadBall = serving;
+    if (serving) {
+      this._possessionStart = now;
+      this._throwReadyAt = now + react + this.rng.range(P.serveHoldMin ?? 0.6, P.serveHoldMax ?? 1.4);
+      this._passInclination = this.rng.chance(clamp01((P.passChance + this.traits.passBias) * 1.2));
+      this._counterAttack = false;
+    }
   }
 
   // ================================================================== events (via the shared hub)
@@ -510,8 +642,52 @@ export class Bot {
   }
   _onRoundEnded() {
     this._resetTransient(game.time.now);
-    this._openingRushUntil = -Infinity;
+    this._fetchUntil = -Infinity;
   }
+  /** A pass was thrown: the receiver remembers it (anti ping-pong); the defenders re-read the situation. */
+  _onBallPassed(e) {
+    if (!e || !this.player) return;
+    const self = this.player;
+    if (e.to === self) {
+      const now = game.time.now;
+      this._receivedPassAt = now;
+      // A thrown pass (lob over the enemy half, or flat): stop drifting and meet it where it drops to chest height.
+      // _selectBall treats the live ball as "handed to us" until then (stand on the spot, no presses).
+      const b = e.ball;
+      if (!e.teleported && b && b.state === BALL_STATE.LIVE) {
+        const t = passArrival(b, chestOf(self, _v1).y, this._fetchSpot);
+        if (t > 0) {
+          this._fetchSpot.y = self.position.y;
+          clampPlanar(this._fetchSpot, this._conf, this._fetchSpot);
+          this._fetchUntil = now + t + 0.35;
+        }
+      }
+    }
+    this._forceDecision = true;
+  }
+  /**
+   * The ball is being handed over (possession violation, out of arena, ball boy, Grand Vanish). The named receiver
+   * stands on the spot until it reappears (auto pick-up); for a ball-boy return nobody is named, so the nearest
+   * player of the zone it reappears in walks there.
+   */
+  _onBallAwarded(e) {
+    const self = this.player;
+    if (!e || !self || !e.position) return;
+    const now = game.time.now;
+    const until = now + (Number.isFinite(e.delay) ? e.delay : 0.6) + 1.2;
+    let mine = e.player === self;
+    if (!mine && !e.player && e.team === self.team) {
+      const z = zoneAt(e.position, _zone2);
+      mine = !!z && z.team === self.team && z.zone === self.zone && this._isNearestOfZone(e.position);
+    }
+    if (mine) {
+      this._fetchSpot.copy(e.position);
+      clampPlanar(this._fetchSpot, this._conf, this._fetchSpot);
+      this._fetchUntil = until;
+    }
+    this._forceDecision = true;
+  }
+  _onPossessionChanged() { this._forceDecision = true; }
   _onDangerSense(e) {
     if (!e || e.player !== this.player || !e.active || !e.ball) return;
     // The event is Specter's passive; any hero receiving it gets the faster notice (traits make Specter dodge better).
@@ -526,7 +702,8 @@ export class Bot {
   _onBallCaught(e) {
     if (!e || e.catcher !== this.player) return;
     this._lastCatchTime = game.time.now;
-    this._lastCatchPerfect = e.quality === 'perfect';
+    // An interception only takes possession: no counter boost to spend quickly.
+    this._lastCatchPerfect = e.quality === 'perfect' && !e.intercepted;
   }
   _onPlayerZone(e) {
     if (!e) return;
@@ -578,7 +755,7 @@ export class Bot {
   // ================================================================== possession
 
   _trackPossession(now) {
-    const P = this.profile;
+    const P = this.profile, self = this.player;
     const hasBall = holdsBall(this.player);
     if (hasBall && !this._hadBall) {
       this._possessionStart = now;
@@ -586,7 +763,19 @@ export class Bot {
       let hesitation = this.rng.range(P.throwHesitationMin, P.throwHesitationMax);
       if (caught) hesitation *= this._lastCatchPerfect ? 0.35 : 0.6; // strike back while the counter boost is hot
       this._throwReadyAt = Math.max(this._throwReadyAt, now + hesitation);
-      this._passInclination = this.rng.chance(clamp01(P.passChance + this.traits.passBias) * (caught ? 0.5 : 1));
+      let passChance = clamp01(P.passChance + this.traits.passBias) * (caught ? 0.5 : 1);
+      // Just received a pass from the same zone: do not hand it straight back (unless the shot clock is short).
+      // Infield <-> outfield returns are the crossfire itself and keep their full chance.
+      const board = _board(self.team), from = board ? board.lastPasser : null;
+      if (now - this._receivedPassAt < 3 && from && from.zone === self.zone && !this._isUrgent()) passChance *= this.tuning.receivedPassDamp;
+      // An outfielder with the ball has every defender squared up to him: skilled bots look for the return pass to
+      // the infield (the crossfire), which _scorePass still only takes when that receiver has the better shot.
+      if (self.zone === ZONE.OUTFIELD && !caught) passChance += (1 - passChance) * this.tuning.outfieldReturnInclination * (P.flankSkill ?? 0.6);
+      this._passInclination = this.rng.chance(passChance);
+      // Inclined to play it through the outfield: give the flank a moment to open before shooting ourselves.
+      if (this._passInclination && !caught && self.zone === ZONE.INFIELD && !this._isUrgent()) {
+        this._throwReadyAt = Math.max(this._throwReadyAt, now + this.rng.range(this.tuning.passSetupMin, this.tuning.passSetupMax));
+      }
       this._counterAttack = caught;
       this.claimedBall = null;
       this._forceDecision = true;
@@ -604,7 +793,10 @@ export class Bot {
     const P = this.profile, T = this.tuning, self = this.player;
     this._forceDecision = false;
     this._nextDecisionTime = now + Math.max(0.05, jitter(this.rng, P.decisionInterval, P.decisionJitter));
-    shrinkBounds(this._conf, self.zone === ZONE.INFIELD ? T.edgeMargin : 0.4, this._inner);
+    const sit = ballSituation(self, this._sit);
+    // Defending (their ball): stay off our sidelines and baseline, where their U outfield stands.
+    const margin = self.zone === ZONE.INFIELD ? (sit.theirs ? T.defendEdgeMargin : T.edgeMargin) : 0.4;
+    shrinkBounds(this._conf, margin, this._inner);
     this._aggression = this._computeAggression();
 
     const hasBall = holdsBall(self);
@@ -681,8 +873,9 @@ export class Bot {
     const ball = this.claimedBall;
     if (hasBall || !ball) return 0;
     let s = 0.55 + 0.35 * (1 - clamp01(timeToBall / 3));
-    if (now < this._openingRushUntil) s += 1;               // opening rush to the centre line
     if (ball.state === BALL_STATE.STASIS) s += 0.25;        // snatch Chrono's frozen balls
+    // Our dead-ball clock is running (the ball rests on our side): get it into play.
+    if (possessionLeft(this.player.team) < Infinity || this._fetchUntil > now) s += this.tuning.retrieveOwnZoneBonus;
     // A run right under an enemy ball holder's nose is risky for cautious bots.
     const players = game.players;
     for (let i = 0; i < players.length; i++) {
@@ -699,30 +892,114 @@ export class Bot {
     let s = 0.75 + 0.3 * clamp01(this.currentTargetScore);
     if (this._counterAttack) s += 0.3;
     if (now - this._possessionStart > this.tuning.maxHoldTime * 0.5) s += 0.2;
+    if (this._isUrgent()) s += 1.0; // the shot clock is running out: take the shot
     return s;
+  }
+
+  /** The possession clock of our team is close to the limit (possessionSafety + urgentMargin). */
+  _isUrgent() {
+    const self = this.player;
+    return !!self && possessionLeft(self.team) <= this.profile.possessionSafety + this.tuning.urgentMargin;
+  }
+
+  /**
+   * Shot clock (every frame): a holder that is not already throwing releases the ball before the possession limit -
+   * the current target (no line-of-sight requirement), else the safest receiver, else a dump throw into the enemy half.
+   */
+  _checkDeadline(now) {
+    const self = this.player;
+    if (!holdsBall(self) || this._throwPhase !== THROW_NONE || this._pendingPass) return;
+    const left = possessionLeft(self.team);
+    if (left > this.profile.possessionSafety + this.tuning.deadlineChargeReserve) return;
+    if (now < this._forceReleaseAt) return;
+    this._forceReleaseAt = now + 0.3;
+    this._forceRelease(now, left);
+  }
+
+  _forceRelease(now, left) {
+    const P = this.profile;
+    this._pendingSkill = this._pendingUltimate = false;
+    let target = this.currentTarget && this.currentTarget.isTargetable ? this.currentTarget : null;
+    if (!target) { this._selectAttackTarget(now); target = this.currentTarget; }
+    if (target) {
+      const planned = this._chooseChargeTime(now, planarDistance(this.player.position, target.position), target);
+      this._plannedCharge = Math.min(planned, Math.max(0.1, left - P.possessionSafety * 0.5 - 0.1));
+      this._throwTarget = target;
+      this._opportunityRolled = false;
+      this._throwPhase = THROW_PRESSING;
+      this._switchBehaviour(BOT_BEHAVIOUR.ATTACK, now);
+      return;
+    }
+    const receiver = this._bestReceiver(now, true);
+    if (receiver) {
+      this._passReceiver = receiver;
+      this._switchBehaviour(BOT_BEHAVIOUR.PASS, now);
+      this._pendingPass = true;
+      return;
+    }
+    // Nobody to throw at or pass to: dump it into the enemy half.
+    this._plannedCharge = 0.15;
+    this._throwTarget = null;
+    this._opportunityRolled = true;
+    this._throwPhase = THROW_PRESSING;
   }
 
   _scorePass(now, hasBall) {
     this._passReceiver = null;
     if (!hasBall || this._throwPhase !== THROW_NONE) return 0;
-    const self = this.player;
-    // Combat.tryPass() sends the ball to the nearest teammate who can receive: evaluate exactly that player.
-    const receiver = game.nearestTeammate(self, self.position);
-    if (!receiver || holdsBall(receiver)) return 0;
+    const receiver = this._bestReceiver(now, false);
+    if (!receiver) return 0;
     this._passReceiver = receiver;
     if (now < this._nextPassAllowedAt) return 0;
 
     // Held too long without a clear shot (everyone cloaked / behind Aegis Barrier): give it to someone who has one.
     const stuck = now - this._possessionStart > this.tuning.maxHoldTime && (!this.currentTarget || !this._targetClear);
     if (stuck) return 1.6;
+    if (this._isUrgent() && !this.currentTarget) return 1.4; // shot clock and no shot: move it on
     if (!this._passInclination || this._counterAttack) return 0;
 
     const mine = this.currentTarget ? this.currentTargetScore : 0;
-    let theirs = this._evaluateOpportunity(receiver);
-    if (receiver.zone === ZONE.OUTFIELD) theirs += 0.1; // outfield teammates throw at the enemies' backs
-    const margin = theirs - mine;
-    if (margin < 0.25) return 0;
+    const margin = this._receiverValue - mine;
+    if (margin < this.tuning.passMargin) return 0;
     return 0.9 + margin + this.traits.passBias * 0.5;
+  }
+
+  /**
+   * Best pass receiver among EVERY teammate able to receive: value = the target score they would have (crossfire:
+   * enemies facing us show them their backs) + outfield bonus + the active pass call - lane risk (enemies near the
+   * low ends of the lob) - ping-pong penalty. `safest` ranks by lowest lane risk first (shot-clock bail-out).
+   * Stores the value in this._receiverValue.
+   */
+  _bestReceiver(now, safest) {
+    const self = this.player, T = this.tuning, P = this.profile;
+    const board = _board(self.team);
+    let n = 0;
+    const players = game.players;
+    for (let i = 0; i < players.length && n < 8; i++) {
+      const e = players[i];
+      if (!game.areEnemies(self, e) || !e.isTargetable || !isPerceivable(self, e, P.cloakDetectionRadius)) continue;
+      _enemyXZ[n * 2] = e.position.x; _enemyXZ[n * 2 + 1] = e.position.z; n++;
+    }
+    let best = null, bestValue = -Infinity;
+    for (let i = 0; i < players.length; i++) {
+      const r = players[i];
+      if (r === self || !game.areTeammates(self, r) || !r.canReceive || holdsBall(r) || r.canAct === false) continue;
+      const risk = passLaneRisk(self.position.x, self.position.z, r.position.x, r.position.z, _enemyXZ, n, T.passLaneRadius);
+      let v;
+      if (safest) v = -risk - planarDistance(self.position, r.position) * 0.01;
+      else {
+        v = this._evaluateOpportunity(r);
+        if (r.zone === ZONE.OUTFIELD) v += T.outfieldReceiverBonus;
+        // Return pass from the outfield: the enemies squared up to us, so they show the infield their backs.
+        else if (self.zone === ZONE.OUTFIELD) v += T.infieldReturnBonus;
+        if (board && board.caller === r && now < board.callUntil) v += T.passCallBonus;
+        v -= risk * T.passLaneRisk;
+        if (board && board.lastPasser === r && now - board.lastPassAt < T.pingPongWindow) v -= T.pingPongPenalty;
+      }
+      if (v > bestValue) { bestValue = v; best = r; }
+    }
+    this._receiverValue = best ? bestValue : 0;
+    return best;
   }
 
   /** Best target score `thrower` would have (as far as this bot can see). */
@@ -818,51 +1095,99 @@ export class Bot {
 
   // ------------------------------------------------------------------ ball selection
 
-  /** Picks the free / stasis ball to run for (sets claimedBall) and returns the time to reach it (s). */
+  /**
+   * Picks the ball to run for (sets claimedBall) and returns the time to reach it (s). Single ball, zone owner only:
+   * a loose ball is ours when it comes to rest in our (team, zone) - or within pickup reach of it (line races) - and
+   * we are the teammate best placed for it. A ball about to be handed to us (award / ball boy) is met on its spot;
+   * an unreachable ball is met where the ball boy will put it when that spot is ours.
+   */
   _selectBall(now) {
     const self = this.player, T = this.tuning, conf = this._conf;
     const prev = this.claimedBall;
-    const balls = game.balls && game.balls.matchBalls;
-    let best = null, bestScore = Infinity, bestTime = Infinity;
-    if (balls && balls.length) {
-      const reach = (combatProfile(self).manualPickupRadius || 1.6) * 0.85;
-      const runSpeed = Math.max(0.5, (movementProfile(self).sprintSpeed || 7.4) * 0.85);
-      const ignored = now < this._ignoredBallUntil ? this._ignoredBall : null;
-      for (let i = 0; i < balls.length; i++) {
-        const ball = balls[i];
-        if (!ball || ball.isAbilityBall || ball === ignored) continue;
-        const st = ball.state;
-        if (st !== BALL_STATE.FREE && st !== BALL_STATE.STASIS) continue;
-        if (!this._isRetrievable(ball, st)) continue;
-        const pos = ball.position;
-        if (st === BALL_STATE.STASIS && pos.y - self.position.y > T.stasisReachHeight) continue;
-
-        // Where a rolling ball will be when we get there (capped look-ahead, floor friction ignored).
-        _v1.copy(pos);
-        if (st === BALL_STATE.FREE && ball.velocity) {
-          const k = Math.min(planarDistance(self.position, pos) / runSpeed, 1);
-          _v1.x += ball.velocity.x * k; _v1.z += ball.velocity.z * k;
+    const ball = matchBall();
+    let best = null, bestTime = Infinity;
+    this._ballBoy = false;
+    const runSpeed = Math.max(0.5, (movementProfile(self).sprintSpeed || 7.4) * 0.85);
+    if (ball && now < this._fetchUntil && !holdsBall(self) && ball.state !== BALL_STATE.HELD) {
+      // Awarded to us: stand where it reappears.
+      best = ball;
+      this._ballBoy = ball.state !== BALL_STATE.FREE;
+      this._pickupPoint.copy(this._fetchSpot);
+      bestTime = planarDistance(self.position, this._fetchSpot) / runSpeed;
+    } else if (ball && !holdsBall(self) && ball !== (now < this._ignoredBallUntil ? this._ignoredBall : null)) {
+      const st = ball.state;
+      if ((st === BALL_STATE.FREE || st === BALL_STATE.STASIS) &&
+        !(st === BALL_STATE.STASIS && ball.position.y - self.position.y > T.stasisReachHeight)) {
+        if (st === BALL_STATE.STASIS) _v3.copy(ball.position); else predictRestPoint(ball, _v3);
+        const z = zoneAt(_v3, _zone);
+        const reach = T.pickupZoneReach;
+        if (!z && st === BALL_STATE.FREE) {
+          // Unreachable (run-off, bleachers): the ball boy returns it to the nearest reachable zone.
+          const bm = game.balls;
+          if (bm && typeof bm.nearestReachableSpot === 'function' && bm.nearestReachableSpot(ball.position, _v4)) {
+            const z2 = zoneAt(_v4, _zone2);
+            if (z2 && z2.team === self.team && z2.zone === self.zone && this._isNearestOfZone(_v4)) {
+              best = ball; this._ballBoy = true;
+              clampPlanar(_v4, conf, this._pickupPoint);
+              bestTime = planarDistance(self.position, this._pickupPoint) / runSpeed;
+            }
+          }
+        } else {
+          const ownZone = !!z && z.team === self.team && z.zone === self.zone;
+          const inReach = planarDistanceToBounds(_v3, conf) <= reach ||
+            (st === BALL_STATE.FREE && planarDistanceToBounds(ball.position, conf) <= reach && this._slowBall(ball));
+          const reserved = Number.isFinite(ball.reservedTeam) && ball.reservedTeam >= 0 && ball.reservedTeam !== self.team &&
+            now < (ball.reservedUntil || 0);
+          if ((ownZone || inReach) && !reserved && this._isRetrievable(ball, st)) {
+            // Run to where it will stop (or, when it will stop out of reach, to where it is now).
+            if (planarDistanceToBounds(_v3, conf) > reach) _v3.copy(ball.position);
+            clampPlanar(_v3, conf, _v2);
+            const dist = this._claimDistance(self, _v2);
+            if (!this._isLeftToTeammate(ball, _v2, dist)) {
+              let t = dist / runSpeed;
+              const enemyTime = this._nearestEnemyTime(ball.position, reach, runSpeed);
+              // Line race: an enemy who gets there first makes the run pointless (and dangerous) unless it is ours.
+              if (enemyTime < t && !ownZone) t += 0.5 + (t - enemyTime) * 0.75;
+              best = ball; bestTime = t;
+              this._pickupPoint.copy(_v2);
+            }
+          }
         }
-        if (planarDistanceToBounds(_v1, conf) > reach) {
-          if (planarDistanceToBounds(pos, conf) > reach) continue; // outside our half entirely
-          _v1.copy(pos);
-        }
-        clampPlanar(_v1, conf, _v2);
-        const dist = planarDistance(self.position, _v2);
-        let t = dist / runSpeed;
-        if (this._isLeftToTeammate(ball, pos, dist)) continue;
-
-        // Centre-line contest: an enemy who gets there first makes the run pointless (and dangerous).
-        const enemyTime = this._nearestEnemyTime(pos, reach, runSpeed);
-        if (enemyTime < t) t += 0.5 + (t - enemyTime) * 0.75;
-        if (st === BALL_STATE.STASIS) t -= 0.6; // frozen enemy ball: snatch it before it resumes
-        if (ball === prev) t -= this.profile.hysteresis * 2;
-        if (t < bestScore) { bestScore = t; best = ball; bestTime = dist / runSpeed; this._pickupPoint.copy(_v2); }
       }
     }
     this.claimedBall = best;
     if (best !== prev) this._claimedBallTime = now;
     return bestTime;
+  }
+
+  /** A loose ball slow enough to be picked up where it is (not about to roll out of reach). */
+  _slowBall(ball) {
+    const v = ball.velocity;
+    return !v || v.x * v.x + v.z * v.z < 1.5 * 1.5;
+  }
+
+  /**
+   * Distance used for ball claims: planar in the infield; along the U (arc length) between two outfield points,
+   * because an outfielder cannot cut across the opponent's half.
+   */
+  _claimDistance(p, pos) {
+    if (p.zone !== ZONE.OUTFIELD) return planarDistance(p.position, pos);
+    const L = outfieldPathLength();
+    return Math.abs(outfieldParam(p.team, p.position) - outfieldParam(p.team, pos)) * L + 0.5 * planarDistanceToBounds(pos, confinementOf(p.team, p.zone));
+  }
+
+  /** This bot is the closest able player of its (team, zone) to `pos` (ties by bind order). */
+  _isNearestOfZone(pos) {
+    const self = this.player, players = game.players;
+    const mine = this._claimDistance(self, pos);
+    for (let i = 0; i < players.length; i++) {
+      const m = players[i];
+      if (m === self || m.team !== self.team || m.zone !== self.zone || m.canAct === false) continue;
+      if (m.health && m.health.isAlive === false && m.zone === ZONE.INFIELD) continue;
+      const d = this._claimDistance(m, pos);
+      if (d < mine - 0.25) return false;
+    }
+    return true;
   }
 
   /**
@@ -887,15 +1212,16 @@ export class Bot {
       if (other === this || other.claimedBall !== ball || !other.player) continue;
       const mate = other.player;
       if (!game.areTeammates(self, mate) || holdsBall(mate) || !_live(other)) continue;
-      const md = planarDistance(mate.position, ballPos);
+      if (mate.zone !== self.zone) continue; // only the zone owner retrieves; another zone's claim is not a rival
+      const md = this._claimDistance(mate, ballPos);
       if (md < myDist - 0.25 || (Math.abs(md - myDist) <= 0.25 && other._order < this._order)) return true;
     }
     // Human teammates cannot announce claims: assume they take a ball they are much closer to.
     const players = game.players;
     for (let i = 0; i < players.length; i++) {
       const mate = players[i];
-      if (!mate.isHuman || !game.areTeammates(self, mate) || holdsBall(mate)) continue;
-      const d = planarDistance(mate.position, ballPos);
+      if (!mate.isHuman || !game.areTeammates(self, mate) || holdsBall(mate) || mate.zone !== self.zone) continue;
+      const d = this._claimDistance(mate, ballPos);
       if (d < 3 && d < myDist * 0.6) return true;
     }
     return false;
@@ -1067,6 +1393,11 @@ export class Bot {
     }
 
     let t = perception.mostUrgent;
+    // An enemy pass the bot already decided to let go is not a threat.
+    if (t.isPass && Math.abs(t.launchTime - this._declinedPassLaunch) < 1e-4) {
+      if (this._threatActive) { this._clearThreat(); this._forceDecision = true; }
+      return;
+    }
     // Threat hysteresis: keep answering the committed ball unless another one is clearly more urgent.
     if (this._threatActive && t.ball !== this._respondingTo &&
       perception.getThreat(this._respondingTo, this._respondingLaunch, this._committedThreat) &&
@@ -1076,6 +1407,14 @@ export class Bot {
     this._threatExpectedAt = now + t.timeToImpact;
 
     if (isNew) {
+      if (this.threat.isPass) {
+        // Interception: go for it (rolled once per pass) or let it fly - never dodge a pass.
+        if (!this._canAttemptCatch() || !this.rng.chance(this.profile.interceptChance)) {
+          this._declinedPassLaunch = this.threat.launchTime;
+          if (this._threatActive) { this._clearThreat(); this._forceDecision = true; }
+          return;
+        }
+      }
       this._threatActive = true;
       this._respondingTo = this.threat.ball;
       this._respondingLaunch = this.threat.launchTime;
@@ -1084,6 +1423,10 @@ export class Bot {
       this._forceDecision = true;
       // Abilities that answer threats (Precognition Dodge, Magnetic Pull, Stasis Field...) get a say right now.
       if (this._throwPhase === THROW_NONE && !this._pendingSkill && !this._pendingUltimate) this._evaluateAbilities(now, true);
+    } else if (this.threat.isPass && this._response === BOT_RESPONSE.CATCH && !this._catchPressed && !this._canAttemptCatch()) {
+      this._declinedPassLaunch = this.threat.launchTime; // cannot intercept any more: let it fly
+      this._clearThreat();
+      this._forceDecision = true;
     } else if (this._response === BOT_RESPONSE.CATCH && !this._catchPressed && !this._canAttemptCatch()) {
       // Situation changed (picked up a ball, got blocked from catching...): fall back to a dodge.
       const dodge = this._chooseDodge(now);
@@ -1096,6 +1439,11 @@ export class Bot {
     this._catchPressed = false;
     this._maneuverPressed = false;
     this._responseStartAt = now;
+    if (this.threat.isPass) { // interception (already rolled in _updateThreat)
+      this._response = BOT_RESPONSE.CATCH;
+      this._plannedCatchLead = this._planCatchLead();
+      return;
+    }
     if (hasStatus(self, 'invulnerable')) { this._response = BOT_RESPONSE.BRACE; return; } // e.g. Precognition Dodge
 
     const canCatch = this._canAttemptCatch();
@@ -1142,16 +1490,20 @@ export class Bot {
     p *= lerp(1, 0.6, inverseLerp(70, 200, t.speedKmh)); // fastballs are scarier to catch
     if (t.fromBehind) p *= 0.35;                          // no time to square up
     if (anyTeammatePending(self)) p += 0.35;              // Chrono's Delayed Impact: a catch saves them
-    if (this._countOutfield(self.team) > 0) p += 0.05;    // a perfect catch revives a teammate
+    if (this._countOutfield(self.team) > 0) p += 0.05;    // a perfect catch revives an eliminated teammate
     if (hasStatus(self, 'slippery') || hasStatus(self, 'dodgeDisabled') || hasStatus(self, 'rooted')) p += 0.25; // dodging impaired
     if (self.health && self.health.hp > STANDARD_HIT_DAMAGE + 0.5) p += 0.1; // Thick Hide can afford a miss
     return clamp01(p);
   }
 
+  /** ELIMINATED outfielders of `team` (the starting outfielder never comes back in, so it does not count). */
   _countOutfield(team) {
     let n = 0;
     const players = game.players;
-    for (let i = 0; i < players.length; i++) if (players[i].team === team && players[i].zone === ZONE.OUTFIELD) n++;
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (p.team === team && p.zone === ZONE.OUTFIELD && !p.isStartingOutfielder) n++;
+    }
     return n;
   }
 
@@ -1323,24 +1675,37 @@ export class Bot {
 
   _execRetrieve(intent, now) {
     const self = this.player, T = this.tuning, ball = this.claimedBall;
-    if (!ball || (ball.state !== BALL_STATE.FREE && ball.state !== BALL_STATE.STASIS) || holdsBall(self)) {
+    const fetching = this._ballBoy || now < this._fetchUntil;
+    if (!ball || holdsBall(self) || (!fetching && ball.state !== BALL_STATE.FREE && ball.state !== BALL_STATE.STASIS) ||
+      (fetching && ball.state === BALL_STATE.HELD)) {
       this._forceDecision = true;
       return this._execPosition(intent, now);
     }
     const pos = ball.position;
-    // Run onto the ball (auto pick-up), leading a rolling ball a little.
-    _spot.copy(pos);
-    if (ball.state === BALL_STATE.FREE && ball.velocity) { _spot.x += ball.velocity.x * 0.25; _spot.z += ball.velocity.z * 0.25; }
-    clampPlanar(_spot, this._conf, _spot);
+    if (this._ballBoy) {
+      // The ball boy / an award will put the ball on this spot: be there (auto pick-up), do not press anything.
+      _spot.copy(this._pickupPoint);
+      _look.copy(this._pickupPoint); _look.y = self.position.y + 1;
+    } else {
+      // Run onto the ball (auto pick-up), leading a rolling ball a little.
+      _spot.copy(pos);
+      if (ball.state === BALL_STATE.FREE && ball.velocity) { _spot.x += ball.velocity.x * 0.25; _spot.z += ball.velocity.z * 0.25; }
+      clampPlanar(_spot, this._conf, _spot);
+      _look.copy(pos);
+    }
     _spot.y = self.position.y;
     this.destination.copy(_spot);
-    seek(self.position, _spot, 0.05, 0.6, _move);
-    const planar = planarDistance(self.position, pos);
-    const sprint = planar > T.sprintDistance || now < this._openingRushUntil;
-    _look.copy(pos);
+    // Outfielders walk the U around the opponent's half until close.
+    if (self.zone === ZONE.OUTFIELD && planarDistance(self.position, _spot) > T.ballBoyNearRadius) {
+      outfieldWaypoint(self.team, self.position, outfieldParam(self.team, _spot), T.outfieldLookAhead, _v1);
+      _v1.y = self.position.y;
+      seek(self.position, _v1, 0.05, 0.6, _move);
+    } else seek(self.position, _spot, 0.05, 0.6, _move);
+    const planar = planarDistance(self.position, this._ballBoy ? _spot : pos);
+    const sprint = planar > T.sprintDistance || possessionLeft(self.team) < 6;
 
     // Give up on a ball chased for too long (stuck against someone, keeps rolling away): ignore it for a while.
-    if (now - this._claimedBallTime > T.maxChaseTime) {
+    if (!fetching && now - this._claimedBallTime > T.maxChaseTime) {
       this._ignoredBall = ball;
       this._ignoredBallUntil = now + 3;
       this.claimedBall = null;
@@ -1348,7 +1713,7 @@ export class Bot {
     }
 
     const manual = combatProfile(self).manualPickupRadius || 1.6;
-    if (planar <= manual * 0.9 && now >= this._nextPickupPressAt) {
+    if (!this._ballBoy && planar <= manual * 0.9 && now >= this._nextPickupPressAt) {
       const height = pos.y - self.position.y;
       if (height <= T.stasisReachHeight) {
         // Leap for a ball frozen high in Chrono's stasis field.
@@ -1369,9 +1734,21 @@ export class Bot {
       return this._execPosition(intent, now);
     }
     const strafe = this._updateStrafe(now, dt);
-    this._attackSpot(target, strafe, _spot);
-    this.destination.copy(_spot);
-    const distance = seek(self.position, _spot, T.arriveRadius * 0.5, T.slowRadius, _move);
+    let distance;
+    if (self.zone === ZONE.OUTFIELD) {
+      // Walk the U to the point nearest the target (throws from its side or back), around the hole corners.
+      const u = this._outfieldTargetU(now);
+      outfieldPoint(self.team, u, _spot);
+      this.destination.copy(_spot);
+      outfieldWaypoint(self.team, self.position, u, T.outfieldLookAhead, _v1);
+      _v1.y = self.position.y;
+      seek(self.position, _v1, T.arriveRadius * 0.5, T.slowRadius, _move);
+      distance = Math.abs(outfieldParam(self.team, self.position) - u) * outfieldPathLength();
+    } else {
+      this._attackSpot(target, strafe, _spot);
+      this.destination.copy(_spot);
+      distance = seek(self.position, _spot, T.arriveRadius * 0.5, T.slowRadius, _move);
+    }
     const sprint = distance > T.sprintDistance && this._throwPhase === THROW_NONE;
 
     const fooled = this._isFooledBy(target);
@@ -1379,7 +1756,8 @@ export class Bot {
     if (fooled) _look.add(this.decoyOffset);
     intent.target = fooled ? null : target; // lets the combat lock the right enemy (not a decoy)
 
-    if (this._throwPhase === THROW_NONE) this._tryBeginThrow(now, target, distance);
+    // A pending ball-empowering ability (Meteor, Hyperbeam, Glue Trap) IS the throw: let it go first.
+    if (this._throwPhase === THROW_NONE && !this._pendingSkill && !this._pendingUltimate) this._tryBeginThrow(now, target, distance);
     return sprint;
   }
 
@@ -1391,6 +1769,7 @@ export class Bot {
     const receiver = this._passReceiver;
     if (this._throwPhase !== THROW_NONE || !holdsBall(this.player) || !receiver) return sprint;
     intent.pass = true;
+    intent.passTarget = receiver;
     intent.target = receiver;
     chestOf(receiver, _look);
     this._passInclination = false;          // one considered pass per possession
@@ -1400,7 +1779,8 @@ export class Bot {
 
   _execPosition(intent, now) {
     const self = this.player, T = this.tuning;
-    if (self.zone === ZONE.OUTFIELD) this._outfieldSpot(now, _spot); else this._infieldSpot(now, _spot);
+    if (self.zone === ZONE.OUTFIELD) return this._execOutfieldPosition(intent, now);
+    this._infieldSpot(now, _spot);
     _spot.y = self.position.y;
     this.destination.copy(_spot);
     // An opponent visibly winding up at us: stop wandering and square up (an idle body turns its chest - and the
@@ -1449,9 +1829,15 @@ export class Bot {
     const lane = count > 1 ? (rank - (count - 1) * 0.5) * (width / (count + 0.5)) : 0;
     const wx = perlin1D(this._noiseSeedX, now * 0.22) * 0.9;
     const wz = perlin1D(this._noiseSeedZ, now * 0.22) * 0.7;
-    const depth = clamp(P.preferredDepth - (this._aggression - 0.5) * 2 + wz, 1.2, halfL - 0.8);
+    // Posture by possession: drop deeper while an enemy infielder holds the one ball, step up while we have it.
+    const sit = this._sit, T = this.tuning;
+    const enemyInfieldHolder = !!sit.holder && sit.holder.team !== self.team && sit.holder.zone === ZONE.INFIELD;
+    let depthBias = 0, maxDepth = halfL - 0.8;
+    if (enemyInfieldHolder) { depthBias = T.defendDepthBonus; maxDepth = halfL - 1.2; } else if (sit.ours) depthBias = T.attackDepthBonus;
+    const depth = clamp(P.preferredDepth + depthBias - (this._aggression - 0.5) * 2 + wz, 1.2, maxDepth);
     out.set(lane + wx, self.position.y, CENTER_Z + s * depth);
     this._holderRepulsion(out, _pushA); out.x += _pushA.x; out.z += _pushA.z;
+    if (enemyInfieldHolder) { this._outfielderRepulsion(out, _pushA); out.x += _pushA.x; out.z += _pushA.z; }
     this._teammateRepulsion(out, P.teammateSpacing, _pushB); out.x += _pushB.x; out.z += _pushB.z;
     // Avoid being cornered: the closer to an edge, the stronger the pull back toward the middle of the half.
     const edge = edgeProximity(out.x, out.z, inner);
@@ -1463,41 +1849,171 @@ export class Bot {
     return clampPlanar(out, inner, out);
   }
 
-  _outfieldSpot(now, out) {
-    const self = this.player, P = this.profile, inner = this._inner;
-    // Line up behind the visible enemies (their backs), spread across the strip.
-    let sumX = 0, n = 0;
-    const players = game.players;
-    for (let i = 0; i < players.length; i++) {
-      const e = players[i];
-      if (!game.areEnemies(self, e) || !e.isTargetable || !isPerceivable(self, e, P.cloakDetectionRadius)) continue;
-      sumX += e.position.x; n++;
+  /** Outfield positioning: walk the U (never across the opponent's half) to the situation's target u. */
+  _execOutfieldPosition(intent, now) {
+    const self = this.player, T = this.tuning;
+    const L = outfieldPathLength();
+    // A little human wander along the path.
+    const wander = perlin1D(this._noiseSeedX, now * 0.3) * 0.6 / L;
+    const u = clamp01(this._outfieldTargetU(now) + wander);
+    outfieldPoint(self.team, u, _spot);
+    _spot.y = self.position.y;
+    this.destination.copy(_spot);
+    const pathDist = Math.abs(outfieldParam(self.team, self.position) - u) * L;
+    const off = planarDistance(self.position, _spot);
+    if (this._settled && pathDist < T.settleRadius && off < T.settleRadius) _move.set(0, 0, 0);
+    else {
+      outfieldWaypoint(self.team, self.position, u, T.outfieldLookAhead, _v1);
+      _v1.y = self.position.y;
+      const d = seek(self.position, _v1, T.arriveRadius, T.slowRadius, _move);
+      this._settled = pathDist <= T.arriveRadius && d <= T.arriveRadius;
     }
-    let x = n > 0 ? sumX / n : (inner.minX + inner.maxX) * 0.5;
-    const rank = this._laneRank(), count = this._laneCount;
-    if (count > 1) x += (rank - (count - 1) * 0.5) * 2.5;
-    const wx = perlin1D(this._noiseSeedX, now * 0.3) * 0.8;
-    const wz = perlin1D(this._noiseSeedZ, now * 0.3) * 0.3;
-    const cz = (inner.minZ + inner.maxZ) * 0.5;
-    const courtSideZ = Math.abs(inner.maxZ - CENTER_Z) < Math.abs(inner.minZ - CENTER_Z) ? inner.maxZ : inner.minZ;
-    out.set(x + wx, self.position.y, lerp(cz, courtSideZ, 0.5) + wz);
-    this._teammateRepulsion(out, P.teammateSpacing, _pushB); out.x += _pushB.x; out.z += _pushB.z;
-    return clampPlanar(out, inner, out);
+    this._chooseWatchPoint(_look);
+    return pathDist > T.sprintDistance * 1.5;
   }
 
   /**
-   * Throwing position: 6-12 m from the target, depth from the centre line by aggression, halfway across toward the
-   * target's lane plus a lateral strafe. From the outfield: behind the target at the court-side edge of the strip.
+   * Target u along our U outfield for the current ball situation (recomputed every flankRecompute s or on a change):
+   *   A  I hold the ball      -> the U point nearest my target (+ strafe): short throws from its side or back
+   *   B  a teammate holds it  -> flank: sampled u maximising crossfire with the holder on its target, a 5-14 m range,
+   *                              little travel, spacing from other outfielders (weaker bots pick among the top 3);
+   *                              call for the ball when I would have a good shot
+   *   E  our live throw lands in our U -> go meet it
+   *   C  otherwise (their ball, their throw, their loose ball) -> behind the enemies' backs (their lateral centroid
+   *                              pushed 20 m beyond them), lanes spread among our outfielders
+   */
+  _outfieldTargetU(now) {
+    const self = this.player, T = this.tuning, P = this.profile, sit = this._sit;
+    const L = outfieldPathLength();
+    const holder = sit.holder;
+    const mine = holdsBall(self);
+    const key = mine ? 1 : holder && holder.team === self.team ? 2 : sit.state === BALL_STATE.LIVE && sit.ours ? 3 : 4;
+    if (key !== 1 && key === this._outfieldKey && now - this._outfieldUAt < T.flankRecompute && this._outfieldU >= 0) return this._outfieldU;
+    this._outfieldKey = key;
+    this._outfieldUAt = now;
+    const u0 = outfieldParam(self.team, self.position);
+    let u = u0;
+    if (key === 1) {
+      const target = this.currentTarget;
+      if (target) u = outfieldParam(self.team, target.position) + this._strafeCurrent / L;
+      else { this._enemyCentroid(_v1); u = outfieldParam(self.team, _v1); }
+    } else if (key === 2) {
+      u = this._flankU(now, holder, u0, L);
+    } else if (key === 3 && sit.hasLanding && this._landsInMyZone(sit.landing)) {
+      u = outfieldParam(self.team, sit.landing);
+    } else {
+      this._enemyCentroid(_v1);
+      const ad = -sideSign(self.team); // our attack direction (toward the opponent's baseline)
+      _v1.z += ad * T.behindDistance;
+      u = outfieldParam(self.team, _v1);
+      const rank = this._laneRank(), count = this._laneCount;
+      if (count > 1) u += (rank - (count - 1) * 0.5) * 2 * T.outfieldLaneOffset;
+    }
+    this._outfieldU = clamp01(u);
+    return this._outfieldU;
+  }
+
+  _landsInMyZone(p) {
+    const z = zoneAt(p, _zone2);
+    return !!z && z.team === this.player.team && z.zone === this.player.zone;
+  }
+
+  /** Flanking u for a teammate-held ball (case B of _outfieldTargetU); may raise a pass call on the team board. */
+  _flankU(now, holder, u0, L) {
+    const self = this.player, T = this.tuning, P = this.profile;
+    // E: the enemy the holder is working on.
+    let E = null;
+    for (let i = 0; i < _bots.length; i++) if (_bots[i].player === holder) { E = _bots[i].currentTarget; break; }
+    if (!E || !E.isTargetable) E = this._nearestEnemyTo(holder.position);
+    if (E) _v3.copy(E.position); else this._enemyCentroid(_v3);
+    const hx = holder.position.x, hz = holder.position.z;
+    const sprint = Math.max(1, movementProfile(self).sprintSpeed || 7.4);
+    const n = Math.min(T.flankSamples | 0, _flankU.length);
+    let bestI = 0;
+    for (let i = 0; i < n; i++) {
+      const u = n > 1 ? i / (n - 1) : 0.5;
+      outfieldPoint(self.team, u, _v2);
+      let sc = T.crossfireWeight * crossfireScore(_v3.x, _v3.z, hx, hz, _v2.x, _v2.z);
+      const d = Math.hypot(_v2.x - _v3.x, _v2.z - _v3.z);
+      sc += T.flankRangeWeight * (1 - clamp01((d - T.flankIdealRange) / T.flankRangeSpan));
+      sc -= T.flankTravelWeight * Math.abs(u - u0) * L / sprint;
+      if (this._outfieldMateNear(_v2, T.outfieldSpacing)) sc -= T.outfieldSpacingPenalty;
+      if (this._outfieldU >= 0 && Math.abs(u - this._outfieldU) <= 0.5 / Math.max(1, n - 1)) sc += T.flankHysteresis;
+      _flankU[i] = u; _flankS[i] = sc;
+      if (sc > _flankS[bestI]) bestI = i;
+    }
+    let pick = bestI;
+    if (n > 3 && !this.rng.chance(P.flankSkill)) {
+      // Less skilled: one of the top 3.
+      let second = -1, third = -1;
+      for (let i = 0; i < n; i++) {
+        if (i === bestI) continue;
+        if (second < 0 || _flankS[i] > _flankS[second]) { third = second; second = i; } else if (third < 0 || _flankS[i] > _flankS[third]) third = i;
+      }
+      const r = this.rng.next();
+      pick = r < 0.5 ? bestI : r < 0.8 ? second : third;
+    }
+    // Pass call: I would have a good shot from here and nobody sits on the lane ends.
+    const board = _board(self.team);
+    if (board && holder !== self && this._evaluateOpportunity(self) >= T.passCallMinScore) {
+      let n2 = 0;
+      const players = game.players;
+      for (let i = 0; i < players.length && n2 < 8; i++) {
+        const e = players[i];
+        if (!game.areEnemies(self, e) || !e.isTargetable) continue;
+        _enemyXZ[n2 * 2] = e.position.x; _enemyXZ[n2 * 2 + 1] = e.position.z; n2++;
+      }
+      if (passLaneRisk(hx, hz, self.position.x, self.position.z, _enemyXZ, n2, 2) === 0) {
+        board.caller = self; board.callScore = this._evaluateOpportunity(self); board.callUntil = now + T.passCallDuration;
+      }
+    }
+    return _flankU[pick];
+  }
+
+  /** Another outfielder of our team stands within `r` of point p. */
+  _outfieldMateNear(p, r) {
+    const self = this.player, players = game.players;
+    for (let i = 0; i < players.length; i++) {
+      const m = players[i];
+      if (m === self || m.team !== self.team || m.zone !== ZONE.OUTFIELD) continue;
+      if (planarDistance(m.position, p) < r) return true;
+    }
+    return false;
+  }
+
+  _nearestEnemyTo(pos) {
+    const self = this.player, players = game.players;
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < players.length; i++) {
+      const e = players[i];
+      if (!game.areEnemies(self, e) || !e.isTargetable || !isPerceivable(self, e, this.profile.cloakDetectionRadius)) continue;
+      const d = planarDistance(e.position, pos);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    return best;
+  }
+
+  /** Planar centroid of the perceivable enemy infielders into `out` (enemy half centre when none). */
+  _enemyCentroid(out) {
+    const self = this.player, players = game.players;
+    let sx = 0, sz = 0, n = 0;
+    for (let i = 0; i < players.length; i++) {
+      const e = players[i];
+      if (!game.areEnemies(self, e) || !e.isTargetable || !isPerceivable(self, e, this.profile.cloakDetectionRadius)) continue;
+      sx += e.position.x; sz += e.position.z; n++;
+    }
+    const court = game.court, halfL = court ? court.halfL : 9;
+    if (n > 0) out.set(sx / n, 0, sz / n);
+    else out.set(0, 0, CENTER_Z + sideSign(opponent(self.team)) * halfL * 0.5);
+    return out;
+  }
+
+  /**
+   * Infield throwing position: 6-12 m from the target, depth from the centre line by aggression, halfway across toward
+   * the target's lane plus a lateral strafe. (Outfielders throw from the U point nearest the target: _outfieldTargetU.)
    */
   _attackSpot(target, strafe, out) {
     const self = this.player, P = this.profile, T = this.tuning, inner = this._inner, pos = self.position;
-    if (self.zone === ZONE.OUTFIELD) {
-      const cz = (inner.minZ + inner.maxZ) * 0.5;
-      const courtSideZ = Math.abs(inner.maxZ - CENTER_Z) < Math.abs(inner.minZ - CENTER_Z) ? inner.maxZ : inner.minZ;
-      out.set(target.position.x + strafe * 0.6, pos.y, lerp(cz, courtSideZ, 0.7));
-      this._teammateRepulsion(out, P.teammateSpacing, _pushB); out.x += _pushB.x; out.z += _pushB.z;
-      return clampPlanar(out, inner, out);
-    }
     const s = sideSign(self.team);
     let depth = lerp(T.attackLineDepthMax, T.attackLineDepthMin, clamp01(this._aggression));
     if (planarDistance(pos, target.position) > T.idealRangeMax) depth = T.attackLineDepthMin;
@@ -1552,6 +2068,27 @@ export class Bot {
     return out;
   }
 
+  /**
+   * While an enemy infielder holds the ball, keep some distance from their outfielders too (the crossfire comes from
+   * our sidelines and baseline): weight outfielderRepelWeight within outfielderRepelRadius.
+   */
+  _outfielderRepulsion(spot, out) {
+    const self = this.player, T = this.tuning, r = T.outfielderRepelRadius;
+    out.set(0, 0, 0);
+    const players = game.players;
+    for (let i = 0; i < players.length; i++) {
+      const e = players[i];
+      if (!game.areEnemies(self, e) || e.zone !== ZONE.OUTFIELD) continue;
+      let ax = spot.x - e.position.x, az = spot.z - e.position.z;
+      const d = Math.hypot(ax, az);
+      if (d >= r || d < 1e-3) continue;
+      ax /= d; az /= d;
+      const w = (r - d) * T.outfielderRepelWeight;
+      out.x += ax * w; out.z += az * w;
+    }
+    return out;
+  }
+
   /** Push away from teammates in the same zone (spreading makes double kills harder). */
   _teammateRepulsion(spot, spacing, out) {
     const self = this.player;
@@ -1587,9 +2124,17 @@ export class Bot {
     return out;
   }
 
-  /** What an idle bot keeps its eyes (and catch cone) on: the nearest enemy ball holder, else the nearest enemy. */
+  /**
+   * What an idle bot keeps its eyes (and catch cone) on: the enemy ball holder; else the receiver of a live enemy pass
+   * (turn toward the coming crossfire before it arrives); else the nearest enemy.
+   */
   _chooseWatchPoint(out) {
     const self = this.player, P = this.profile;
+    const ball = matchBall();
+    if (ball && ball.state === BALL_STATE.LIVE && ball.isPass && ball.lastThrower && game.areEnemies(self, ball.lastThrower)) {
+      const r = ball.lockedTarget;
+      if (r && r.position && game.areEnemies(self, r)) return chestOf(r, out);
+    }
     let holder = null, nearest = null, holderD = Infinity, nearestD = Infinity;
     const players = game.players;
     for (let i = 0; i < players.length; i++) {
@@ -1633,7 +2178,7 @@ export class Bot {
     const maxRange = self.zone === ZONE.OUTFIELD ? T.outfieldMaxThrowRange : T.maxThrowRange;
     if (range > maxRange) return;
     // Still closing in on a distant target: keep approaching unless the ball has been held for a while.
-    if (range > T.idealRangeMax && distanceToSpot > 1.5 && now - this._possessionStart < T.maxHoldTime * 0.5) return;
+    if (range > T.idealRangeMax && distanceToSpot > 1.5 && now - this._possessionStart < T.maxHoldTime * 0.5 && !this._isUrgent()) return;
     this._plannedCharge = this._chooseChargeTime(now, range, target);
     this._throwTarget = target;
     this._opportunityRolled = false;
@@ -1654,6 +2199,9 @@ export class Bot {
     const combat = self.combat;
     if (combat && combat.counterBoostUntil > now) charge = Math.min(charge, Math.max(lo, combat.counterBoostUntil - now - 0.15));
     const maxCharge = combatProfile(self).maxChargeTime || 2.5;
+    // Never charge past the shot clock.
+    const left = possessionLeft(self.team);
+    if (left < Infinity) charge = Math.min(charge, Math.max(0.1, left - P.possessionSafety - 0.2));
     return clamp(charge, 0.05, Math.max(0.05, maxCharge - 0.05));
   }
 
@@ -1697,6 +2245,10 @@ export class Bot {
     const charged = charging ? (combat.chargeSeconds || 0) : 0;
     const cap = combatProfile(self).maxChargeTime || 2.5;
     let release = charging && (charged >= this._plannedCharge || charged >= cap - 0.05);
+
+    // Shot clock: release now rather than lose the ball.
+    if (!release && charging && charged >= T.minEarlyReleaseCharge &&
+      possessionLeft(self.team) <= this.profile.possessionSafety * 0.5) release = true;
 
     // Panic release: a ball will hit us before we can finish the charge.
     if (!release && charging && this._threatActive && this._response !== BOT_RESPONSE.CATCH &&

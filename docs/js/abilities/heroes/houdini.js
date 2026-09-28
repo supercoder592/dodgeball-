@@ -10,10 +10,10 @@
 import * as THREE from 'three';
 import { game, ORDER } from '../../game.js';
 import { EV } from '../../core/events.js';
-import { ZONE } from '../../core/constants.js';
+import { ZONE, TEAM } from '../../core/constants.js';
 import { Court } from '../../world/court.js';
 import { AbilityBase, registerAbility, FAIL, INTERRUPT } from '../abilityBase.js';
-import { mirroredSwapDestinations, pushAwayPlanar, fanAngle, roundRobin, spreadX, ringPoint } from '../shared/houdiniMath.js';
+import { mirroredSwapDestinations, pushAwayPlanar, fanAngle, roundRobin, ringPoint } from '../shared/houdiniMath.js';
 
 /** Stage-magic palette: neutral grey smoke with a faint violet cast, pale violet flashes (no neon). */
 export const HOUDINI_FX = Object.freeze({ smoke: 0x9d93ab, flash: 0xbda3f2, channelTint: 0xa77cf0 });
@@ -80,6 +80,15 @@ function ballWorldPosition(ball, out) {
   return out.copy(ball.position);
 }
 
+const _zoneOut = { team: TEAM.NONE, zone: ZONE.INFIELD };
+/** Team whose zone (infield half or U outfield, painted lines) the floor point `pos` lies in; TEAM.NONE if none. */
+function zoneTeamAt(pos) {
+  const c = game.court;
+  if (!c || typeof c.zoneAt !== 'function') return TEAM.NONE;
+  const z = c.zoneAt(pos, _zoneOut);
+  return z ? z.team : TEAM.NONE;
+}
+
 /** Clamps `pos` (in place) into the confinement of `team`/`zone` - court rules must always hold. */
 function clampToZone(team, zone, pos) {
   if (game.court) Court.clamp(game.court.confinement(team, zone), pos);
@@ -127,12 +136,14 @@ function resolveAimTarget(self, maxDist, coneDeg, allowCloaked, nearestFallback)
 
 /**
  * Houdini passive [Hat Trick]: pressing Pass makes the held ball vanish from Houdini's hand and reappear directly in a
- * teammate's hands - no lob, nothing for the enemy to intercept.
+ * teammate's hands - no lob, nothing for the enemy to intercept. BallPassed { teleported: true } also releases the
+ * possession clock like any pass.
  *
  * Implemented as `owner.combat.passHandler = { tryHandlePass(ball, from, to) }` (installed on equip, re-installed if
  * Combat is recreated/cleared, removed on unequip; never steals a handler somebody else installed). Receiver: the
- * nearest teammate able to take the ball right now (free hands, can act, not frozen), strictly preferring Houdini's own
- * zone (infield->infield, outfield->outfield); the Combat's suggested `to` wins ties. When nobody can receive - or the
+ * teammate Combat picked (`to`: the aim-cone / bot passTarget choice, possibly the outfielder) when that teammate can
+ * take the ball right now (free hands, can act, not frozen); otherwise the nearest able teammate, strictly preferring
+ * Houdini's own zone (infield->infield, outfield->outfield). When nobody can receive - or the
  * receiver refuses the ball - the handler returns false and the default lob pass runs.
  * Presentation: a smoke puff at both ends, teleport SFX, and EV.BallPassed with `teleported: true`.
  */
@@ -197,6 +208,10 @@ export class HoudiniHatTrick extends AbilityBase {
 
   _selectReceiver(from, suggested) {
     const p = this.params;
+    if (suggested && this._canReceive(from, suggested)) {
+      const dx = suggested.position.x - from.position.x, dz = suggested.position.z - from.position.z;
+      if (!(p.maxRange > 0) || dx * dx + dz * dz <= p.maxRange * p.maxRange) return suggested;
+    }
     const maxSq = p.maxRange > 0 ? p.maxRange * p.maxRange : Infinity;
     let best = null, bestScore = Infinity;
     for (const pl of game.players) {
@@ -450,8 +465,8 @@ export class HoudiniSwapPlaces extends AbilityBase {
 // =================================================================================================================
 
 /**
- * Watches balls vanished by Grand Vanish and puffs them back into existence (smoke + sound) when they return on the
- * centre line. A temporary game system (ORDER.ABILITIES) that removes itself once every ball is back or on timeout,
+ * Watches balls vanished by Grand Vanish and puffs them back into existence (smoke + sound) when they reappear at a
+ * teammate's feet. A temporary game system (ORDER.ABILITIES) that removes itself once every ball is back or on timeout,
  * so it keeps working after the (instant) ultimate has ended.
  */
 class VanishReturnWatcher {
@@ -495,20 +510,21 @@ class VanishReturnWatcher {
 }
 
 /**
- * Houdini ultimate [Grand Vanish] - the great disappearing act:
- *  1. Every ball held by an enemy (infield or outfield) vanishes from their hands in a puff of smoke: any charge is
- *     cancelled, the ball is released and `despawn(4 s, respawn)`ed; it reappears ON the centre line (spread across the
- *     width like the opening rush, dropping from 0.6 m - neutral, whoever gets there first).
- *  2. Every free ball on the court teleports to the feet of Houdini's infield team (Houdini included), round-robin
- *     over players without a ball first, on a small fan in front of each receiver (inside auto-pickup reach) and
- *     clamped into their own infield, so the balls always land in friendly territory.
+ * Houdini ultimate [Grand Vanish] - the great disappearing act (a possession steal in the single-ball game):
+ *  1. The ball held by an enemy (infield or outfield) vanishes from their hands in a puff of smoke: any charge is
+ *     cancelled, the ball is released and handed to Houdini's team with game.balls.awardBall(ball, team, 'vanish',
+ *     Houdini's position, vanishTime 2.5 s): it stays hidden, then reappears at the feet of the team's best receiver
+ *     (an infield player near Houdini first), reserved for his team (EV.BallAwarded cause 'vanish').
+ *  2. A free ball resting anywhere that is NOT one of his team's zones (enemy half, enemy U, unreachable run-off)
+ *     teleports to the feet of Houdini's infield team (Houdini included), round-robin over players without a ball first,
+ *     on a small fan in front of each receiver (inside auto-pickup reach) and clamped into their own infield. A ball
+ *     already on his side is left alone (his team retrieves it anyway).
  * Smoke at both ends of every relocation, heavy juice on cast. Refuses to fire (FAIL.NO_TARGET, meter kept) when
  * there is nothing to vanish and nothing to summon.
  */
 export class HoudiniGrandVanish extends AbilityBase {
   static defaults = {
-    vanishTime: 4,          // s enemy-held balls stay gone
-    respawnHeight: 0.6,     // m above the floor where vanished balls reappear
+    vanishTime: 2.5,        // s the stolen ball stays hidden before it reappears with Houdini's team
     includeHoudini: true,   // Houdini's own feet also receive balls
     ringRadius: 0.7,        // m from a receiver's feet (below the 0.9 m auto-pickup reach)
     ringSpacingDeg: 55,     // deg between balls placed around the same receiver
@@ -517,7 +533,7 @@ export class HoudiniGrandVanish extends AbilityBase {
     castHitstop: 0.05,      // s (juice, unscaled)
     castTrauma: 0.35,
     castPulse: 0.6,
-    aiMinEnemyHeld: 2,      // bots cast once enemies hold this many balls
+    aiMinEnemyHeld: 1,      // bots cast once enemies hold this many balls (one ball in play)
     returnTimeout: 3,       // s after vanishTime the return watcher gives up
   };
 
@@ -549,7 +565,7 @@ export class HoudiniGrandVanish extends AbilityBase {
     for (const b of balls) {
       if (!b || b.isAbilityBall) continue;
       if (b.state === 'held' && b.holder && this.isEnemy(b.holder)) this._enemyHeld.push(b);
-      else if (b.state === 'free') this._free.push(b);
+      else if (this._summonable(b)) this._free.push(b);
     }
     this._vanishEnemyBalls();
     this._summonFreeBalls();
@@ -559,22 +575,30 @@ export class HoudiniGrandVanish extends AbilityBase {
     this._receivers.length = 0;
   }
 
-  onRoundReset() { this._watcher.stop(); } // the ball manager re-places every match ball for the new round
+  onRoundReset() { this._watcher.stop(); } // the ball manager re-places the match ball for the new round
   onUnequip() { this._watcher.stop(); }
 
-  /** Scores enemy ball control: best when the enemies are loaded up, bonus when behind. */
+  /**
+   * Single ball: steal it when an enemy holds it (more when they are winding up, or when Houdini's side is behind);
+   * pull it over when it lies loose in an enemy zone; never when it is already his team's, flying or hidden.
+   */
   evaluateAI(ctx) {
     if (!game.balls || !ctx) return 0;
     this._countBalls();
     const p = this.params;
-    const held = this._cntEnemyHeld, free = this._cntFree;
     let u = 0;
-    if (held >= p.aiMinEnemyHeld) u = 0.6 + 0.15 * (held - p.aiMinEnemyHeld);
-    else if (held > 0 && free > 0 && !ctx.holdingBall) u = 0.35;
-    else if (free >= 3 && !ctx.holdingBall) u = 0.25;
-    if (u > 0 && ctx.alliesInfield < ctx.enemiesInfield) u += 0.15;
-    const w = this.def.aiWeight ?? 0.5;
-    return Math.max(0, Math.min(1, u * (0.5 + w)));
+    if (this._cntEnemyHeld >= p.aiMinEnemyHeld) {
+      u = 0.7;
+      for (const b of this._ballList()) {
+        const h = b && b.state === 'held' ? b.holder : null;
+        if (h && this.isEnemy(h) && h.combat && h.combat.isCharging) { u += 0.1; break; }
+      }
+      if (ctx.alliesInfield < ctx.enemiesInfield) u += 0.1;
+    } else if (this._cntFree > 0 && !ctx.holdingBall) {
+      u = 0.5;
+    }
+    const w = this.def.aiWeight ?? 0.9;
+    return Math.max(0, Math.min(1, u * (w / 0.9)));
   }
 
   // ---------------------------------------------------------------- internals
@@ -584,13 +608,18 @@ export class HoudiniGrandVanish extends AbilityBase {
     return (bm && (bm.matchBalls || bm.active)) || [];
   }
 
-  /** Counts enemy-held and free match balls (allocation-free). */
+  /** A loose ball Grand Vanish may pull over: free and NOT resting in one of Houdini's team's zones. */
+  _summonable(b) {
+    return !!b && b.state === 'free' && zoneTeamAt(b.position) !== this.owner.team;
+  }
+
+  /** Counts enemy-held and summonable free match balls (allocation-free). */
   _countBalls() {
     let held = 0, free = 0;
     for (const b of this._ballList()) {
       if (!b || b.isAbilityBall) continue;
       if (b.state === 'held' && b.holder && this.isEnemy(b.holder)) held++;
-      else if (b.state === 'free') free++;
+      else if (this._summonable(b)) free++;
     }
     this._cntEnemyHeld = held;
     this._cntFree = free;
@@ -599,7 +628,7 @@ export class HoudiniGrandVanish extends AbilityBase {
   _vanishEnemyBalls() {
     const p = this.params;
     const count = this._enemyHeld.length;
-    const width = game.court ? game.court.width : 9;
+    const bm = game.balls;
     for (let i = 0; i < count; i++) {
       const ball = this._enemyHeld[i];
       const holder = ball.holder;
@@ -609,9 +638,14 @@ export class HoudiniGrandVanish extends AbilityBase {
         if (holder.combat.isCharging && holder.combat.cancelCharge) holder.combat.cancelCharge();
         if (holder.combat.heldBall === ball && holder.combat.dropBall) holder.combat.dropBall(_zero.set(0, 0, 0));
       }
-      // Fresh vector: the ball keeps its respawn point for 4 s.
-      const respawn = new THREE.Vector3(spreadX(i, count, width), floorY() + p.respawnHeight, 0);
-      ball.despawn(p.vanishTime, respawn);
+      // The ball changes hands: hidden for vanishTime, then at the feet of Houdini's best receiver (reserved for us).
+      if (bm && typeof bm.awardBall === 'function') {
+        bm.awardBall(ball, this.owner.team, 'vanish', this.owner.position, p.vanishTime);
+      } else {
+        const respawn = clampToZone(this.owner.team, this.owner.zone, _v2.copy(this.owner.position));
+        respawn.y = floorY() + (ball.radius || 0.105) + 0.05;
+        ball.despawn(p.vanishTime, respawn.clone());
+      }
       this._watcher.watch(ball);
       fxPlay('vanishSmoke', _v, { scale: p.smokeScale, color: HOUDINI_FX.smoke });
       sfx('vanish', _v, 0.8, 0.9);

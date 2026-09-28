@@ -3,7 +3,7 @@
 //
 //   passive   gale.silent_footsteps    GaleSilentFootsteps     permanent 'silentFootsteps' status (audio + minimap read it)
 //   skill     gale.optical_camouflage  GaleOpticalCamouflage   4 s cloak +20% speed; a throw from stealth +30% and reveals
-//   ultimate  gale.shadow_strike       GaleShadowStrike        teleport behind the nearest unheld ball and pick it up
+//   ultimate  gale.shadow_strike       GaleShadowStrike        teleport behind the loose ball on her side and pick it up
 //
 // Statuses are the single source of truth other modules read: Status turns 'cloaked' into avatar.setCloaked (near
 // invisible for enemies of the local player, translucent for allies) and 'haste' into motor speed; Audio skips footsteps
@@ -213,16 +213,18 @@ export class GaleOpticalCamouflage extends AbilityBase {
 
 /**
  * Gale's ultimate [Shadow Strike]: "instantly teleports directly behind the nearest unheld ball and picks it up".
- * Target: the nearest match ball nobody holds ('free', or frozen mid-air in Chrono's 'stasis'; never a conjured
- * ability projectile) lying inside Gale's own zone confinement expanded by `zoneExpansion` m, so a ball resting just
- * across a line is still reachable but Gale can never be placed illegally. Gale appears `behindDistance` m behind the
- * ball relative to her attack direction (the ball ends up between Gale and the enemy), clamped into her zone, facing
- * the enemy, with a teleport burst at both ends - then the ball is put straight into her hand (combat.giveBall).
+ * Target: the nearest match ball nobody holds ('free', or frozen mid-air in Chrono's 'stasis') on HER side: within
+ * `zoneExpansion` m (= the regular pickup reach, 0.55 m) of her own zone region - her infield half, or her U outfield
+ * when she is an outfielder (hole-aware Court.distanceTo: the enemy half inside the U never counts) - and not reserved
+ * for the other team (an awarded ball). Dead-ball rule: a ball resting in an enemy zone is theirs. Gale appears
+ * `behindDistance` m behind the ball relative to her attack direction (infield: toward the enemy half; outfield: from
+ * the ball toward the centre of the enemy half), clamped into her zone (U-aware Court.clamp), facing the enemy, with a
+ * teleport burst at both ends - then the ball is put straight into her hand (combat.giveBall).
  * Fails with 'noTarget' when no ball qualifies and refuses while already holding a ball.
  */
 export class GaleShadowStrike extends AbilityBase {
   static defaults = {
-    zoneExpansion: 0.6,        // m the search area extends past Gale's confinement
+    zoneExpansion: 0.55,       // m past Gale's confinement (= BALL_PHYS.pickupZoneReach: her side of the lines only)
     includeStasisBalls: true,  // snatch balls frozen by Chrono's Stasis Field
     behindDistance: 0.7,       // m behind the ball (relative to the attack direction)
     poofColor: 0x383d4d,       // dark smoke of the teleport bursts
@@ -255,8 +257,8 @@ export class GaleShadowStrike extends AbilityBase {
       return;
     }
 
-    this._attackDirection(_attack);
     _ground.set(ball.position.x, game.court ? game.court.floorY : 0, ball.position.z);
+    this._attackDirection(_attack, _ground);
     // Directly behind the ball: the ball sits between Gale and the enemy. Court rules win over the exact spot.
     _dest.copy(_ground).addScaledVector(_attack, -this.params.behindDistance);
     const bounds = this._zoneBounds();
@@ -307,13 +309,16 @@ export class GaleShadowStrike extends AbilityBase {
     if (!balls) return null;
     const zone = this._zoneBounds();
     const e = this.params.zoneExpansion;
+    const now = game.time ? game.time.now : 0;
     let best = null, bestD = Infinity;
     for (const b of balls) {
       if (!b || b.isAbilityBall || b.holder || !b.position) continue;
       const okState = b.state === 'free' || (this.params.includeStasisBalls && b.state === 'stasis');
       if (!okState) continue;
+      // An awarded ball reserved for the other team is not hers to take.
+      if (b.reservedTeam >= 0 && b.reservedTeam !== o.team && now < (b.reservedUntil || 0)) continue;
       const p = b.position;
-      if (zone && (p.x < zone.minX - e || p.x > zone.maxX + e || p.z < zone.minZ - e || p.z > zone.maxZ + e)) continue;
+      if (zone && Court.distanceTo(zone, p) > e) continue;
       const dx = p.x - o.position.x, dz = p.z - o.position.z;
       const d = dx * dx + dz * dz;
       if (d < bestD) { bestD = d; best = b; }
@@ -332,14 +337,20 @@ export class GaleShadowStrike extends AbilityBase {
     return this._zone;
   }
 
-  /** Planar unit direction toward the enemy for Gale's current zone. */
-  _attackDirection(out) {
+  /**
+   * Planar unit direction toward the enemy for Gale's current zone, seen from `from` (the ball). Infield: straight at
+   * the enemy half. Outfield (the U around the enemy half: side arms and back strip): from the ball toward the centre
+   * of the enemy half, i.e. inward along X on an arm, toward the court from the back strip.
+   */
+  _attackDirection(out, from) {
     const court = game.court, o = this.owner;
-    if (court && o.team >= 0) out.set(0, 0, -court.sideSign(o.team));
-    else out.set(Math.sin(o.yaw || 0), 0, Math.cos(o.yaw || 0));
-    // The outfield strip lies behind the OPPONENT's baseline: from there the enemy is the other way.
-    if (o.zone === ZONE.OUTFIELD) out.negate();
-    return out;
+    if (!court || !(o.team >= 0)) return out.set(Math.sin(o.yaw || 0), 0, Math.cos(o.yaw || 0));
+    if (o.zone === ZONE.OUTFIELD) {
+      const cz = -court.sideSign(o.team) * court.halfL * 0.5; // centre of the opponent's half
+      out.set(-(from ? from.x : o.position.x), 0, cz - (from ? from.z : o.position.z));
+      if (out.lengthSq() > 1e-6) return out.normalize();
+    }
+    return out.set(0, 0, -court.sideSign(o.team));
   }
 }
 

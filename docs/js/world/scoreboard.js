@@ -57,7 +57,10 @@ export class Scoreboard {
       home: scores[0] | 0, away: scores[1] | 0,
       time: m && Number.isFinite(m.timeLeft) ? Math.max(0, Math.ceil(m.timeLeft)) : null,
       homeIn: count(TEAM.HOME), awayIn: count(TEAM.AWAY),
-      perTeam: (m && m.rules && m.rules.playersPerTeam) || 3,
+      // Infield dots only: the starting outfielder (元外野) never counts toward the infield.
+      perTeam: m && m.rules
+        ? Math.max(1, (m.rules.playersPerTeam || 4) - (m.rules.startingOutfielders | 0))
+        : 3,
     };
   }
 
@@ -85,7 +88,7 @@ export class Scoreboard {
       drawWordmark(x, W / 2, H * 0.42, W * 0.8, { stacked: true, shadow: true });
       x.font = `700 ${H * 0.07}px ${SPORT_FONT}`;
       x.fillStyle = 'rgba(220,225,235,0.8)';
-      x.fillText('3v3 SUPER LEAGUE  ·  BEST OF 3', W / 2, H * 0.86);
+      x.fillText('4v4 SUPER LEAGUE  ·  BEST OF 3', W / 2, H * 0.86);
     } else {
       // team panels
       x.fillStyle = hex(home); x.fillRect(24, 24, W * 0.36, 84);

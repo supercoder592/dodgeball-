@@ -26,12 +26,16 @@ export const CONTROLS_TABLE = Object.freeze([
 ]);
 
 export const TIPS = Object.freeze([
-  ['Perfect catch: press catch 0–0.15 s before impact — revives a teammate, +15% ultimate, counter throw +20% speed.',
-    '完美接球：球命中前 0–0.15 秒按下接球——復活一名外場隊友、終極技 +15%、反擊球速 +20%。'],
+  ['One ball: each round one team serves; hold it (or leave it on your floor) for 10 s and it goes to the other team.',
+    '全場只有一顆球：每回合一方持球開球；持球（或球停在己方場地）超過 10 秒，球權交給對方。'],
+  ['Your outfield surrounds the enemy half (both sides + behind): pass to your outfielder for crossfire.',
+    '外場包圍敵方半場（兩側與底線後）：傳球給外場隊友形成夾擊。'],
+  ['Eliminated players join the outfield — a hit brings them back in. The starting outfielder stays out all round.',
+    '出局球員移至外場，擊中敵人即可回到內場；元外野整局留在外場。'],
+  ['Perfect catch: press catch 0–0.15 s before impact — revives an eliminated teammate, +15% ultimate, counter throw +20% speed.',
+    '完美接球：球命中前 0–0.15 秒按下接球——復活一名出局隊友、終極技 +15%、反擊球速 +20%。'],
   ['Rally boost: every catch-and-rethrow adds +10% speed (max 220 km/h) until the ball touches the floor.',
     '連續回擊：每次接球再投出球速 +10%（上限 220 km/h），球一落地即重置。'],
-  ['Eliminated players throw from the outfield behind the enemy baseline — a hit brings them back in.',
-    '出局球員移至敵方底線後的外場仍可投球，擊中敵人即可回到內場。'],
 ]);
 
 /** Settings page rows. kind: range | toggle | cycle. */

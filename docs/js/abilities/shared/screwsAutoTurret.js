@@ -2,29 +2,33 @@
 // Screws - Auto-Turret unit (自動砲台). A tripod-mounted pneumatic ball launcher built from machined parts (powder-
 // coated gunmetal housing, steel barrel and hopper, rubber feet, team enamel side plates, status LED).
 //   * Deploy: legs splay out and the body squats onto them (0.55 s, scaled), then it goes live.
-//   * Collect: free MATCH balls within 4 m are magnetically lifted into the hopper (up to 3 stored). A stored ball is
-//     taken out of play with ball.despawn() (its visual is replaced by a dummy in the hopper) and comes back through
-//     ball.resetTo() when fired or released.
+//   * Collect: the free MATCH ball within 4 m is magnetically lifted into the hopper (capacity 1 - there is only one
+//     ball) - but only while it rests in Screws' OWN infield half (court.zoneAt): the turret never steals from the
+//     enemy half or from the enemy U outfield along his sidelines. A stored ball is taken out of play with
+//     ball.despawn() (its visual is replaced by a dummy in the hopper), marked ball.custodyTeam = Screws' team (the
+//     possession clock treats it as his team's and pauses) and comes back through ball.resetTo() when fired or
+//     released (both clear the custody). With no valid target for `idleRelease` s the ball is dropped again.
 //   * Fire: every 1.5 s (scaled) at the nearest targetable, non-cloaked enemy: yaw/pitch servo onto a lead point, then
 //     a stored ball is launched through owner.combat.launchBall with params from owner.combat.buildThrowParams
 //     (origin = muzzle, ~95 km/h, style 'turret'); recoil, muzzle VFX/SFX. Hits credit Screws.
 //   * Body: registered in game.hittables - enemy live balls are blocked, Screws' team's balls pass.
-//   * Shutdown: stored balls drop out as free balls, the unit folds and disposes itself.
+//   * Shutdown: stored balls drop out as free balls (inside Screws' confinement), the unit folds and disposes itself.
 // ---------------------------------------------------------------------------------------------------------------
 import * as THREE from 'three';
 import { game } from '../../game.js';
-import { KMH_TO_MS, MAX_BALL_SPEED_MS, GRAVITY, TEAM } from '../../core/constants.js';
+import { KMH_TO_MS, MAX_BALL_SPEED_MS, GRAVITY, TEAM, ZONE } from '../../core/constants.js';
+import { Court } from '../../world/court.js';
 import { Ballistics } from '../../core/rules.js';
 import { sweptPointVsAabb, leadTarget, approachAngle, wrapAngle, springStep } from './screwsGadgetMath.js';
 import {
   BALL, matchBalls, throwerTeam, setBallVelocity, fx, sfx, trauma, sceneRoot, addWorldObject, removeWorldObject,
-  disposeObject3D, gadgetMaterial, sharedGeometry, teamColor, chestOf, isAlive, hasStatus,
+  disposeObject3D, gadgetMaterial, sharedGeometry, teamColor, chestOf, isAlive, hasStatus, inTeamInfield,
 } from './screwsGadgetKit.js';
 
 export const TURRET_DEFAULTS = Object.freeze({
   collectRadius: 4,       // m (spec)
   fireInterval: 1.5,      // s (spec, scaled)
-  capacity: 3,            // stored balls
+  capacity: 1,            // stored balls (single-ball rule)
   shotSpeedKmh: 95,       // km/h (spec ~95)
   range: 30,              // m target acquisition
   deployTime: 0.55,       // s (scaled)
@@ -42,6 +46,7 @@ export const TURRET_DEFAULTS = Object.freeze({
   scanInterval: 0.12,     // s
   retargetInterval: 0.2,  // s
   storeSafety: 15,        // s: despawn safety timer (ball respawns by itself if everything else failed)
+  idleRelease: 2.5,       // s holding the ball with no valid target before it is dropped back into play
   recoil: 0.085,          // m barrel kick
   idleSweep: 0.55,        // rad amplitude of the idle scan
 });
@@ -91,6 +96,8 @@ export class ScrewsAutoTurret {
     this._aimError = Math.PI;
     this._aimWait = 0;
     this._fireTimer = 0;
+    this._idleHold = 0;
+    this._conf = null;                // Screws' infield confinement (cached; Court.confinement allocates)
     this._scanT = 0;
     this._retargetT = 0;
     this._ledFlash = 0;
@@ -195,6 +202,13 @@ export class ScrewsAutoTurret {
     this._retargetT -= dt;
     if (this._retargetT <= 0 || !this._validTarget(this._target)) { this._retargetT = p.retargetInterval; this._target = this._findTarget(); }
     this._aimAt(dt);
+    // Nothing to shoot at: do not sit on the only ball - drop it back into play after a moment.
+    if (this.stored.length && !this._target) {
+      this._idleHold += dt;
+      if (this._idleHold >= p.idleRelease) { this._idleHold = 0; this._releaseAll(); }
+    } else {
+      this._idleHold = 0;
+    }
     this._fireTimer -= dt;
     if (this._fireTimer <= 0 && this.stored.length && this._target) {
       if (this._aimError <= p.aimTolerance || this._aimWait >= p.maxAimWait) {
@@ -219,6 +233,9 @@ export class ScrewsAutoTurret {
       if (!b || b.state !== BALL.FREE || b.isAbilityBall || this.incoming.has(b)) continue;
       const dx = b.position.x - this.position.x, dz = b.position.z - this.position.z;
       if (dx * dx + dz * dz > r2 || b.position.y > this.floorY + 2.5) continue;
+      // Dead-ball rule: only a ball resting in Screws' own infield half is his team's to collect.
+      if (!inTeamInfield(b.position, this.team)) continue;
+      if (b.reservedTeam >= 0 && b.reservedTeam !== this.team && game.time.now < (b.reservedUntil || 0)) continue;
       this.incoming.set(b, 0);
       added++;
       sfx('magnetHum', b.position, 0.5, 1.3);
@@ -229,7 +246,8 @@ export class ScrewsAutoTurret {
     if (!this.incoming.size) return;
     const p = this.p;
     for (const [b, t] of this.incoming) {
-      if (b.state !== BALL.FREE) { this.incoming.delete(b); continue; }
+      // Someone picked it up, or it rolled out of Screws' half while being lifted: let it go.
+      if (b.state !== BALL.FREE || (t > 0.3 && !inTeamInfield(b.position, this.team))) { this.incoming.delete(b); continue; }
       const tt = t + dt;
       _to.subVectors(this.hopperMouth, b.position);
       const d = _to.length();
@@ -247,8 +265,11 @@ export class ScrewsAutoTurret {
     if (this.stored.length >= this.p.capacity || !ball.despawn) return;
     // Safety respawn point on the floor beside the unit (only used if the turret never releases it).
     _m.set(this.position.x + 0.6 * Math.sin(this._baseYaw), this.floorY + 0.12, this.position.z + 0.6 * Math.cos(this._baseYaw));
+    this._clampHome(_m);
     ball.despawn(this.p.storeSafety, _m.clone());
     if (ball.state !== BALL.DESPAWNED) return; // refused
+    ball.custodyTeam = this.team; // his team's possession while in the hopper (clock paused)
+    this._idleHold = 0;
     this.stored.push(ball);
     fx('catch', this.hopperMouth, { scale: 0.45, color: teamColor(this.team).getHex() });
     sfx('turretLoad', this.hopperMouth, 0.9, 1);
@@ -260,6 +281,7 @@ export class ScrewsAutoTurret {
       if (!b || b.state !== BALL.DESPAWNED) continue;
       const a = this._yaw + Math.PI + (i - 1) * 0.7;
       _m.set(this.hopperMouth.x + Math.sin(a) * 0.25, Math.max(this.floorY + 0.3, this.hopperMouth.y), this.hopperMouth.z + Math.cos(a) * 0.25);
+      this._clampHome(_m);
       _v.set(Math.sin(a) * 1.3, 1.2, Math.cos(a) * 1.3);
       this._putBack(b, _m, _v);
     }
@@ -273,6 +295,15 @@ export class ScrewsAutoTurret {
     else if (ball.teleport) ball.teleport(pos, vel);
     if (ball.makeFree) ball.makeFree(vel, true);
     else setBallVelocity(ball, vel);
+    if ('custodyTeam' in ball) ball.custodyTeam = TEAM.NONE;
+  }
+
+  /** Clamps a floor point (x/z in place) into Screws' infield confinement: released balls land on his side. */
+  _clampHome(p) {
+    const court = game.court;
+    if (!court) return p;
+    if (!this._conf) this._conf = court.confinement(this.team, ZONE.INFIELD);
+    return Court.clamp(this._conf, p);
   }
 
   // ------------------------------------------------------------------ targeting & firing
