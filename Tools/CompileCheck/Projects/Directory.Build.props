@@ -15,7 +15,10 @@
     <NoWarn>$(NoWarn);CS0649;CS0414;CS0169;CS1591;CS0436</NoWarn>
     <RepoRoot>$(MSBuildThisFileDirectory)../../../</RepoRoot>
     <UnityCache>$(MSBuildThisFileDirectory)../.cache/</UnityCache>
-    <UnityDefines>UNITY_5_3_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2018_1_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_2020_1_OR_NEWER;UNITY_2021_1_OR_NEWER;UNITY_2021_2_OR_NEWER;UNITY_2021_3_OR_NEWER;UNITY_STANDALONE;UNITY_STANDALONE_WIN;ENABLE_PHYSICS;ENABLE_MONO</UnityDefines>
+    <!-- DU_CC_PLAYER_REFS: the reference assemblies are player-flavoured and omit editor-only engine members
+         (Light.lightmapBakeType, LightingSettings.*, LightProbeGroup.probePositions). Code using them is fenced with
+         #if !DU_CC_PLAYER_REFS and type-checked by EditorOnlyApis.csproj against the editor UnityEngine.dll instead. -->
+    <UnityDefines>UNITY_5_3_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2018_1_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_2020_1_OR_NEWER;UNITY_2021_1_OR_NEWER;UNITY_2021_2_OR_NEWER;UNITY_2021_3_OR_NEWER;UNITY_STANDALONE;UNITY_STANDALONE_WIN;ENABLE_PHYSICS;ENABLE_MONO;DU_CC_PLAYER_REFS</UnityDefines>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
   </PropertyGroup>

@@ -9,13 +9,14 @@
 #   RuntimePlayerInputSystem  Player build (no UNITY_EDITOR), Input System + HDRP
 #   RuntimePlayerLegacy       Player build, legacy Input Manager, no HDRP package
 #   RenderingHDRP / Editor / EditorHDRP / TestsEditMode / Core
+#   EditorOnlyApis            editor-only engine members (fenced by DU_CC_PLAYER_REFS) vs the editor UnityEngine.dll
 # -----------------------------------------------------------------------------
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 "$HERE/setup.sh" >/dev/null || { echo "setup failed"; exit 2; }
 
-ALL=(Core Runtime RuntimePlayerInputSystem RuntimePlayerLegacy RenderingHDRP Editor EditorHDRP TestsEditMode)
+ALL=(Core Runtime RuntimePlayerInputSystem RuntimePlayerLegacy RenderingHDRP Editor EditorHDRP EditorOnlyApis TestsEditMode)
 if [ "$#" -gt 0 ]; then PROJECTS=("$@"); else PROJECTS=("${ALL[@]}"); fi
 
 status=0

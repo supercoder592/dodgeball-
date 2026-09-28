@@ -274,7 +274,9 @@ namespace DodgeballUltra.Editor.HDRP
             var light = go.AddComponent<Light>();
             light.type = LightType.Directional;
             light.color = Color.white;
+#if !DU_CC_PLAYER_REFS // editor-only engine member (see Tools/CompileCheck/EditorOnlyApis)
             light.lightmapBakeType = LightmapBakeType.Mixed; // realtime direct + baked bounce
+#endif
             HdrpLightUtility.ConfigurePhysicalLight(light, r.KeyLux, r.KeyTemperature);
             HdrpLightUtility.EnableShadows(light, 3, true);
 
@@ -312,7 +314,9 @@ namespace DodgeballUltra.Editor.HDRP
                 light.spotAngle = Mathf.Clamp(2f * Mathf.Atan(coverRadius / distance) * Mathf.Rad2Deg, 25f, 110f);
                 light.innerSpotAngle = light.spotAngle * 0.45f;
                 light.range = Mathf.Max(30f, distance * 3f);
+#if !DU_CC_PLAYER_REFS // editor-only engine member (see Tools/CompileCheck/EditorOnlyApis)
                 light.lightmapBakeType = LightmapBakeType.Mixed;
+#endif
                 light.shadows = LightShadows.None;
 
                 // Spot angle is set first: the lumen -> candela conversion depends on the cone.
@@ -402,7 +406,9 @@ namespace DodgeballUltra.Editor.HDRP
             for (int i = 0; i < local.Length; i++) local[i] = go.transform.InverseTransformPoint(world[i]);
 
             var group = go.AddComponent<LightProbeGroup>();
+#if !DU_CC_PLAYER_REFS // editor-only engine member (see Tools/CompileCheck/EditorOnlyApis)
             group.probePositions = local;
+#endif
         }
 
         /// <summary>
@@ -466,6 +472,7 @@ namespace DodgeballUltra.Editor.HDRP
                     name = "DU_ArenaLightingSettings",
                     bakedGI = true,
                     realtimeGI = false,
+#if !DU_CC_PLAYER_REFS // editor-only engine members (see Tools/CompileCheck/EditorOnlyApis)
                     mixedBakeMode = MixedLightingMode.IndirectOnly,
                     lightmapper = LightingSettings.Lightmapper.ProgressiveGPU,
                     lightmapResolution = 12f,
@@ -478,6 +485,7 @@ namespace DodgeballUltra.Editor.HDRP
                     indirectSampleCount = 512,
                     environmentSampleCount = 256,
                     maxBounces = 3,
+#endif
                 };
                 AssetDatabase.CreateAsset(settings, path);
             }

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Editor-only engine members, checked against the editor-flavoured UnityEngine.dll (see DU_CC_PLAYER_REFS). -->
+  <PropertyGroup>
+    <AssemblyName>DodgeballUltra.CompileCheck.EditorOnlyApis</AssemblyName>
+    <DefineConstants>$(UnityDefines);UNITY_EDITOR</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../EditorOnlyApis/**/*.cs" />
+    <Reference Include="$(UnityCache)sdk/lib/UnityEngine.dll" Private="false" />
+  </ItemGroup>
+</Project>
