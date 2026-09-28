@@ -10,6 +10,8 @@
 // ---------------------------------------------------------------------------------------------------------------
 
 const EPS = 1e-9;
+/** Scratch end-sphere centre (the capsule test runs per live ball per fixed step: no allocations). */
+const _cap = { x: 0, y: 0, z: 0 };
 
 /**
  * First contact of a point moving from `from` to `to` with a sphere (center, radius). Starting inside -> t = 0.
@@ -63,11 +65,11 @@ export function segmentVsVerticalCapsule(from, to, axis, y0, y1, radius, outPoin
       }
     }
     // End spheres (rounded caps).
-    const _c = { x: axis.x, y: y0, z: axis.z };
-    const t0 = sweptPointVsSphere(from, to, _c, radius);
+    _cap.x = axis.x; _cap.y = y0; _cap.z = axis.z;
+    const t0 = sweptPointVsSphere(from, to, _cap, radius);
     if (t0 >= 0 && (best < 0 || t0 < best)) best = t0;
-    _c.y = y1;
-    const t1 = sweptPointVsSphere(from, to, _c, radius);
+    _cap.y = y1;
+    const t1 = sweptPointVsSphere(from, to, _cap, radius);
     if (t1 >= 0 && (best < 0 || t1 < best)) best = t1;
   }
   if (best < 0) return -1;

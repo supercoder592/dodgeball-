@@ -33,40 +33,38 @@ export function sweptPointVsSphere(from, to, center, radius) {
 /**
  * First contact of a point moving from `from` to `to` with an axis-aligned box [min, max] (slab method).
  * Writes the outward face normal of the entered face into `outNormal` ({x,y,z}).
- * Starting inside returns t = 0 with the normal of the nearest face opposing the motion (tunnel recovery).
+ * Starting inside returns t = 0 with the normal of the nearest face (tunnel recovery).
  * @returns {number} fraction 0..1, or -1 when the segment misses
  */
 export function sweptPointVsAabb(from, to, min, max, outNormal) {
-  const d = [to.x - from.x, to.y - from.y, to.z - from.z];
-  const o = [from.x, from.y, from.z];
-  const lo = [min.x, min.y, min.z];
-  const hi = [max.x, max.y, max.z];
+  const ox = from.x, oy = from.y, oz = from.z;
+  const inside = ox >= min.x && ox <= max.x && oy >= min.y && oy <= max.y && oz >= min.z && oz <= max.z;
+  if (inside) {
+    // Recovery: push out through the face of least penetration.
+    let best = ox - min.x, axis = 0, sign = -1;
+    const cand = [max.x - ox, oy - min.y, max.y - oy, oz - min.z, max.z - oz];
+    const axes = [0, 1, 1, 2, 2], signs = [1, -1, 1, -1, 1];
+    for (let i = 0; i < 5; i++) if (cand[i] < best) { best = cand[i]; axis = axes[i]; sign = signs[i]; }
+    setAxisNormal(outNormal, axis, sign);
+    return 0;
+  }
   let tEnter = 0, tExit = 1, axis = -1, sign = 0;
-  let inside = true;
   for (let i = 0; i < 3; i++) {
-    if (o[i] < lo[i] || o[i] > hi[i]) inside = false;
-    if (Math.abs(d[i]) < EPS) {
-      if (o[i] < lo[i] || o[i] > hi[i]) return -1; // parallel and outside this slab
+    const o = i === 0 ? ox : i === 1 ? oy : oz;
+    const d = i === 0 ? to.x - ox : i === 1 ? to.y - oy : to.z - oz;
+    const lo = i === 0 ? min.x : i === 1 ? min.y : min.z;
+    const hi = i === 0 ? max.x : i === 1 ? max.y : max.z;
+    if (Math.abs(d) < EPS) {
+      if (o < lo || o > hi) return -1; // parallel and outside this slab
       continue;
     }
-    const inv = 1 / d[i];
-    let t0 = (lo[i] - o[i]) * inv, t1 = (hi[i] - o[i]) * inv;
+    const inv = 1 / d;
+    let t0 = (lo - o) * inv, t1 = (hi - o) * inv;
     let s = -1; // entering through the min face -> outward normal is -axis
     if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; s = 1; }
     if (t0 > tEnter) { tEnter = t0; axis = i; sign = s; }
     if (t1 < tExit) tExit = t1;
     if (tEnter > tExit) return -1;
-  }
-  if (inside) {
-    // Recovery: push out through the face the motion is heading away from on the axis of least penetration.
-    let best = Infinity; axis = 0; sign = 1;
-    for (let i = 0; i < 3; i++) {
-      const dl = o[i] - lo[i], dh = hi[i] - o[i];
-      if (dl < best) { best = dl; axis = i; sign = -1; }
-      if (dh < best) { best = dh; axis = i; sign = 1; }
-    }
-    setAxisNormal(outNormal, axis, sign);
-    return 0;
   }
   if (axis < 0) return -1;
   setAxisNormal(outNormal, axis, sign);
@@ -78,6 +76,21 @@ function setAxisNormal(out, axis, sign) {
   out.x = axis === 0 ? sign : 0;
   out.y = axis === 1 ? sign : 0;
   out.z = axis === 2 ? sign : 0;
+}
+
+/**
+ * Squared distance from point `p` to the segment `a` -> `a + d` (d = displacement). Used for predictive captures:
+ * "does the ball pass within r of the hand during this step?".
+ */
+export function segmentPointDistSq(a, d, p) {
+  const len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+  let t = 0;
+  if (len2 > EPS) {
+    t = ((p.x - a.x) * d.x + (p.y - a.y) * d.y + (p.z - a.z) * d.z) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+  const cx = a.x + d.x * t - p.x, cy = a.y + d.y * t - p.y, cz = a.z + d.z * t - p.z;
+  return cx * cx + cy * cy + cz * cz;
 }
 
 /** Frame-rate independent exponential blend factor: fraction of the gap closed in `dt` at `rate` (1/s). */
@@ -152,6 +165,19 @@ export function inFrontWithin(dx, dz, fx, fz, radius, minForwardDot = -0.2) {
 }
 
 /**
+ * Tackle deflection volume test: a ball at offset `rel` from the chest, relative to a charge direction `dir` (planar
+ * unit), is deflected when it lies between `-behind` and `reach` metres ahead and within `halfWidth` of the charge axis.
+ * @returns {number} forward distance of the ball along `dir` when inside the volume, NaN otherwise
+ */
+export function inChargeVolume(rel, dir, reach, halfWidth, behind = 0.25) {
+  const fwd = rel.x * dir.x + rel.z * dir.z;
+  if (fwd < -behind || fwd > reach) return NaN;
+  const lx = rel.x - dir.x * fwd, lz = rel.z - dir.z * fwd;
+  const lateral2 = lx * lx + lz * lz + rel.y * rel.y * 0.5; // vertical offset counts half (the body is tall)
+  return lateral2 <= halfWidth * halfWidth ? fwd : NaN;
+}
+
+/**
  * First-order target lead: where to aim a projectile of `speed` from `origin` at a target at `pos` moving with `vel`
  * (planar prediction, a couple of refinement passes). Writes into `out` and returns the flight time estimate.
  */
@@ -166,23 +192,69 @@ export function leadTarget(origin, pos, vel, speed, out, maxLeadTime = 1.2) {
   return t;
 }
 
+/** Wraps an angle to (-PI, PI]. */
+export function wrapAngle(a) {
+  a = (a + Math.PI) % (2 * Math.PI);
+  if (a < 0) a += 2 * Math.PI;
+  return a - Math.PI;
+}
+
 /** Smooth angle approach (radians) at `maxRate` rad/s; handles wrap-around. */
 export function approachAngle(current, target, maxRate, dt) {
-  let d = target - current;
-  while (d > Math.PI) d -= 2 * Math.PI;
-  while (d < -Math.PI) d += 2 * Math.PI;
+  const d = wrapAngle(target - current);
   const step = maxRate * dt;
   if (Math.abs(d) <= step) return target;
   return current + Math.sign(d) * step;
 }
 
+/**
+ * Critically damped spring step (value, velocity) toward `target` with angular frequency `omega` (rad/s).
+ * Returns the new value and writes the new velocity into state.v. Used for recoil / deploy animations.
+ */
+export function springStep(state, target, omega, dt) {
+  const x = state.x - target;
+  const exp = Math.exp(-omega * dt);
+  const tmp = (state.v + omega * x) * dt;
+  state.v = (state.v - omega * tmp) * exp;
+  state.x = target + (x + tmp) * exp;
+  return state.x;
+}
+
 /** Deterministic 1-D value noise in [-1, 1] (for procedural blob outlines). */
 export function valueNoise1(x, seed = 0) {
   const i = Math.floor(x), f = x - i;
-  const h = (n) => {
-    const s = Math.sin((n + seed * 57.13) * 127.1) * 43758.5453;
-    return (s - Math.floor(s)) * 2 - 1;
-  };
   const u = f * f * (3 - 2 * f);
-  return h(i) * (1 - u) + h(i + 1) * u;
+  return hash1(i, seed) * (1 - u) + hash1(i + 1, seed) * u;
+}
+
+function hash1(n, seed) {
+  const s = Math.sin((n + seed * 57.13) * 127.1) * 43758.5453;
+  return (s - Math.floor(s)) * 2 - 1;
+}
+
+function hash2(ix, iy, seed) {
+  const s = Math.sin(ix * 127.1 + iy * 311.7 + seed * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+/**
+ * Tileable 2-D value noise in [0, 1]: the lattice wraps every `period` cells, so sampling x in [0, period) gives a
+ * seamless texture (used for the procedural normal maps of the glue puddle and the turret's cast metal).
+ */
+export function periodicValueNoise2(x, y, period, seed = 0) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const m = (v) => ((v % period) + period) % period;
+  const x0 = m(ix), x1 = m(ix + 1), y0 = m(iy), y1 = m(iy + 1);
+  const a = hash2(x0, y0, seed), b = hash2(x1, y0, seed), c = hash2(x0, y1, seed), d = hash2(x1, y1, seed);
+  return (a * (1 - ux) + b * ux) * (1 - uy) + (c * (1 - ux) + d * ux) * uy;
+}
+
+/** Irregular blob radius at angle `theta` (radians) for a puddle of base radius `r` (+-`wobble` fraction). */
+export function blobRadius(theta, r, wobble, seed = 0) {
+  // Periodic lattice around the circle (period = cell count) so the outline closes without a seam at theta = 2 PI.
+  const t = (((theta / (2 * Math.PI)) % 1) + 1) % 1;
+  const n = (periodicValueNoise2(t * 7, 0.5, 7, seed) * 2 - 1) * 0.65 + (periodicValueNoise2(t * 17, 3.5, 17, seed + 3) * 2 - 1) * 0.35;
+  return r * (1 + wobble * n);
 }

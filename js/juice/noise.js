@@ -80,17 +80,21 @@ export class Perlin1D {
 
   /**
    * Fractal Brownian motion: `octaves` layers, each `lacunarity` x the frequency and `gain` x the amplitude of the
-   * previous one. Normalised to [-1, 1].
+   * previous one. Variance-preserving normalisation (divide by sqrt(sum amp^2)): the octaves are uncorrelated, so the
+   * result has the same RMS (~0.33) as a single octave whatever the octave count - designers can add octaves without
+   * the shake getting weaker. Clamped to [-1, 1] (95% of samples stay within about +-0.7).
    */
   fbm(x, octaves = 3, lacunarity = 2.0, gain = 0.5) {
     let sum = 0, amp = 1, freq = 1, norm = 0;
     for (let o = 0; o < octaves; o++) {
       // Offset each octave so their lattice zeros do not line up (otherwise every octave is 0 at integer x).
       sum += amp * this.noise(x * freq + o * 17.31);
-      norm += amp;
+      norm += amp * amp;
       amp *= gain;
       freq *= lacunarity;
     }
-    return norm > 0 ? sum / norm : 0;
+    if (!(norm > 0)) return 0;
+    const v = sum / Math.sqrt(norm);
+    return v < -1 ? -1 : v > 1 ? 1 : v;
   }
 }

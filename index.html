@@ -2,40 +2,28 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Dodgeball Ultra - 建置中</title>
-<style>
-  :root { --bg:#0b0d10; --panel:rgba(255,255,255,.06); --fg:#eef1f4; --muted:#9aa4ae; --accent:#ff6a2b; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:16px/1.6 system-ui,"Noto Sans TC","PingFang TC",sans-serif; }
-  main { max-width:720px; margin:0 auto; padding:56px 20px; }
-  h1 { font-size:40px; margin:0 0 4px; letter-spacing:.02em; }
-  h1 span { color:var(--accent); }
-  .sub { color:var(--muted); margin:0 0 28px; }
-  .card { background:var(--panel); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:20px 22px; margin:16px 0; }
-  a.btn { display:inline-block; background:var(--accent); color:#111; font-weight:700; padding:12px 20px; border-radius:8px; text-decoration:none; margin-top:8px; }
-  ul { margin:8px 0 0; padding-left:20px; color:var(--muted); }
-  small { color:var(--muted); }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0d10" />
+<meta name="description" content="Dodgeball Ultra - realistic 3v3 superpowered dodgeball in the browser. 寫實 3v3 超能力躲避球。" />
+<title>Dodgeball Ultra</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="css/game.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/",
+    "cannon-es": "./vendor/cannon-es/cannon-es.js"
+  }
+}
+</script>
 </head>
 <body>
-<main>
-  <h1>Dodgeball <span>Ultra</span></h1>
-  <p class="sub">寫實 3v3 超能力躲避球 · 網頁版建置中</p>
-  <div class="card">
-    <strong>遊戲正在建置中</strong>
-    <p>完成後這個網址會直接變成可以玩的遊戲，不需要安裝任何東西。</p>
-    <ul>
-      <li>10 名英雄、30 個技能</li>
-      <li>Microsoft Rocketbox 真人模型與動作捕捉動畫</li>
-      <li>完美接球、連續回擊加速、打擊停頓與鏡頭震動</li>
-    </ul>
-  </div>
-  <div class="card">
-    <strong>先看看真人角色</strong>
-    <p>角色展示頁已經可以用：選擇英雄與動作（待機、走路、跑步、衝刺、歡呼…）。</p>
-    <a class="btn" href="dev/avatar-viewer.html?hero=Rayne&amp;clip=idle">開啟角色展示</a>
-  </div>
-  <small>角色模型：Microsoft Rocketbox Avatar Library (MIT)。</small>
-</main>
+  <!-- WebGL canvas container -->
+  <div id="app"></div>
+  <!-- DOM overlays (HUD, menus, loading) are built by js/ui/*.js inside this layer -->
+  <div id="ui"></div>
+  <noscript>Dodgeball Ultra needs JavaScript and WebGL 2. 需要啟用 JavaScript 與 WebGL 2。</noscript>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>
