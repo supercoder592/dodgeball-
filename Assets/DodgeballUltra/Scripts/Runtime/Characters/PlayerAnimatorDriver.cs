@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using DodgeballUltra.Combat;
 using DodgeballUltra.Events;
 using DodgeballUltra.Player;
 using UnityEngine;
@@ -259,7 +260,7 @@ namespace DodgeballUltra.Characters
             float dt = Time.deltaTime;
             PlayerMotor motor = Owner.Motor;
             PlayerStateMachine fsm = Owner.StateMachine;
-            Combat.PlayerCombatController combat = Owner.Combat;
+            PlayerCombatController combat = Owner.Combat;
             StatusEffectController status = Owner.Status;
 
             PlayerStateId state = fsm != null ? fsm.Current : PlayerStateId.Grounded;

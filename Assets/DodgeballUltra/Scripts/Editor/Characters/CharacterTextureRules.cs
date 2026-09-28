@@ -104,7 +104,7 @@ namespace DodgeballUltra.Editor.Characters
             // ---- quality settings (first import only, user-tweakable afterwards) ----
             if (includeQualitySettings)
             {
-                CharacterPipelineSettings settings = CharacterPipelineSettings.instance;
+                CharacterPipelineSettings settings = CharacterPipelineSettings.Instance;
                 int maxSize = kind == CharacterTextureKind.Portrait ? PortraitMaxSize : settings.TextureSizePowerOfTwo;
                 changed |= Set(importer.maxTextureSize, maxSize, v => importer.maxTextureSize = v);
                 changed |= Set(importer.textureCompression, TextureImporterCompression.CompressedHQ, v => importer.textureCompression = v);

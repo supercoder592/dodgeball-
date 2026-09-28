@@ -92,14 +92,23 @@ namespace DodgeballUltra.Abilities.Heroes
             if (receiver == null) return false;
 
             var fromCombat = from.Combat;
+            var toCombat = receiver.Combat;
             Vector3 departure = ball.transform.position;
 
             // Release from Houdini's hand first so the combat controllers never both reference the ball.
             if (fromCombat.IsCharging) fromCombat.CancelCharge();
             if (fromCombat.HeldBall == ball) fromCombat.DropBall(Vector3.zero);
-            receiver.Combat.GiveBall(ball);
+            toCombat.GiveBall(ball);
 
-            Vector3 arrival = receiver.Combat.GetThrowOrigin();
+            if (toCombat.HeldBall != ball)
+            {
+                // The receiver refused the ball (e.g. their state changed during the hand-off). Put it back in Houdini's
+                // hand and decline, so the default lob pass runs and the ball is never left lying at Houdini's feet.
+                if (ball.State != BallState.Held && !fromCombat.HasBall) fromCombat.GiveBall(ball);
+                return false;
+            }
+
+            Vector3 arrival = toCombat.GetThrowOrigin();
             VfxManager.Spawn(VfxId.TeleportPoof, departure, Quaternion.identity, poofScale, poofTint);
             VfxManager.Spawn(VfxId.TeleportPoof, arrival, Quaternion.identity, poofScale, poofTint);
             AudioManager.PlayAt(SfxId.Teleport, departure, sfxVolume);

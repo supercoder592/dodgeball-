@@ -20,8 +20,8 @@ namespace DodgeballUltra.Abilities.Heroes
     /// eliminates (<see cref="PlayerHealth"/> rule: Frozen + hit =&gt; ForceEliminate) - which also applies when the second
     /// ball is another Glacier Freeze.</item>
     /// </list>
-    /// Presentation: cold vapour (FrozenMist) streams off the ball in flight, an IceBurst shatters at every contact, and the
-    /// frozen victim steams with FrozenMist for the whole freeze.
+    /// Presentation: cold vapour (FrozenMist) streams off the ball in flight and an IceBurst shatters at every contact; the
+    /// frozen victim's ice encasing and steaming mist come from the <see cref="StatusEffectController"/> (Frozen side effect).
     /// </summary>
     public sealed class ElsaFreezePayload : BallPayloadBase
     {
@@ -53,6 +53,7 @@ namespace DodgeballUltra.Abilities.Heroes
         public override void OnLaunched(DodgeBall ball)
         {
             if (ball == null) return;
+            VfxManager.StopEffect(_flightMist); // defensive: a payload is launched once, never leak a second emitter
             // Supercooled ball: visible cold vapour trails off it (looping until the ball stops being live).
             _flightMist = VfxManager.SpawnAttached(VfxId.FrozenMist, ball.transform, Vector3.zero, 0.35f, IceTint);
         }
@@ -122,10 +123,10 @@ namespace DodgeballUltra.Abilities.Heroes
             }
             if (victim.Abilities != null) victim.Abilities.InterruptAll(InterruptReason.Frozen);
 
-            // The ice block steams for the whole freeze.
-            VfxManager.SpawnAttached(VfxId.FrozenMist, victim.transform, Vector3.up * 1f, 1f, IceTint, FreezeDuration);
-            AudioManager.PlayAt(SfxId.Freeze, victim.ChestPosition, 1f, 0.9f);
-
+            // The ice-block look (CharacterVisual.SetFrozen) and the steaming FrozenMist are owned by the
+            // StatusEffectController for exactly as long as Frozen lasts - including an early end (second-hit elimination,
+            // round reset) - so nothing is spawned here that could outlive the freeze. The Freeze SFX already played at
+            // the impact point in OnAfterHitPlayer.
             if (victim.IsLocalPlayer) ScreenFx.Pulse(ScreenPulse.Freeze, 0.9f, Mathf.Min(FreezeDuration, 0.8f));
             else if (Caster != null && Caster.IsLocalPlayer) ScreenFx.Pulse(ScreenPulse.Freeze, 0.25f, 0.2f);
         }

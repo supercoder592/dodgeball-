@@ -1,5 +1,7 @@
 using UnityEditor;
+using UnityEditorInternal;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace DodgeballUltra.Editor.Characters
 {
@@ -7,10 +9,42 @@ namespace DodgeballUltra.Editor.Characters
     /// Tuning of the realistic-human character pipeline (download, texture/material conversion, LODs, animator).
     /// Stored per project in <c>ProjectSettings/DodgeballUltraCharacterPipeline.asset</c> and edited in
     /// <b>Project Settings ▸ Dodgeball Ultra ▸ Character Pipeline</b>. Defaults are the values the game ships with.
+    /// <para>
+    /// Persistence mirrors <c>ScriptableSingleton</c> (serialized file outside Assets/, loaded on first access) but is
+    /// implemented explicitly so the settings also work in batch mode and with the compile-check reference assemblies.
+    /// </para>
     /// </summary>
-    [FilePath("ProjectSettings/DodgeballUltraCharacterPipeline.asset", FilePathAttribute.Location.ProjectFolder)]
-    public sealed class CharacterPipelineSettings : ScriptableSingleton<CharacterPipelineSettings>
+    public sealed class CharacterPipelineSettings : ScriptableObject
     {
+        /// <summary>Settings file, relative to the project folder.</summary>
+        public const string SettingsFilePath = "ProjectSettings/DodgeballUltraCharacterPipeline.asset";
+
+        private static CharacterPipelineSettings s_instance;
+
+        /// <summary>The project's settings (loaded from <see cref="SettingsFilePath"/> or created with defaults).</summary>
+        public static CharacterPipelineSettings Instance
+        {
+            get
+            {
+                if (s_instance == null) s_instance = LoadOrCreate();
+                return s_instance;
+            }
+        }
+
+        private static CharacterPipelineSettings LoadOrCreate()
+        {
+            CharacterPipelineSettings settings = null;
+            if (System.IO.File.Exists(System.IO.Path.Combine(RocketboxAssetSet.ProjectRoot, SettingsFilePath)))
+            {
+                Object[] loaded = InternalEditorUtility.LoadSerializedFileAndForget(SettingsFilePath);
+                if (loaded != null && loaded.Length > 0) settings = loaded[0] as CharacterPipelineSettings;
+            }
+            if (settings == null) settings = CreateInstance<CharacterPipelineSettings>();
+            // Not an asset: never saved with a scene, never unloaded, but editable in the settings UI.
+            settings.hideFlags = HideFlags.DontSave;
+            return settings;
+        }
+
         // ------------------------------------------------------------------------------------------------ download
         [Header("Download (Microsoft Rocketbox, pinned commit)")]
         [Tooltip("Parallel HTTP downloads. raw.githubusercontent.com serves 4 connections per client comfortably.")]
@@ -127,7 +161,8 @@ namespace DodgeballUltra.Editor.Characters
         [Min(0.1f)] public float leaveGestureSpeed = 1f;
 
         /// <summary>Persists the settings to ProjectSettings/.</summary>
-        public void SaveSettings() => Save(true);
+        public void SaveSettings()
+            => InternalEditorUtility.SaveToSerializedFileAndForget(new Object[] { this }, SettingsFilePath, true);
 
         /// <summary>Restores every value to its shipped default and saves.</summary>
         public void ResetToDefaults()

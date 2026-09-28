@@ -15,13 +15,17 @@ namespace DodgeballUltra.Abilities.Heroes
     /// <list type="number">
     /// <item>Every ball currently held by an enemy (infield or outfield) vanishes from their hands in a puff of smoke:
     /// the charge/hold is cancelled, the ball is released and <see cref="DodgeBall.Despawn"/>ed for 4 s, after which it
-    /// reappears on the centre line (spread across the court width like the opening rush).</item>
+    /// reappears exactly on the centre line (spread across the court width like the opening rush, but neutral: it
+    /// belongs to whichever team gets there first).</item>
     /// <item>Every Free ball on the court is teleported (<see cref="DodgeBall.TeleportTo"/>) to the feet of Houdini's
     /// infield team (Houdini included), distributed round-robin on a small ring in front of each player - inside their
     /// auto-pickup reach and clamped to their own zone, so the balls land in friendly territory.</item>
     /// </list>
-    /// VanishSmoke at both ends of every relocation, and heavy juice on cast (hitstop, camera trauma, ultimate screen
+    /// VanishSmoke at both ends of every relocation (a vanished ball puffs back into existence when it returns, tracked
+    /// through <see cref="DodgeBall.StateChanged"/>), and heavy juice on cast (hitstop, camera trauma, ultimate screen
     /// pulse, crowd gasp).
+    /// <para>The ultimate refuses to fire (<see cref="AbilityFailReason.NoTarget"/>, meter kept) when there is nothing to
+    /// vanish and nothing to summon.</para>
     /// </summary>
     [Serializable]
     public sealed class HoudiniGrandVanish : AbilityBase
@@ -63,6 +67,10 @@ namespace DodgeballUltra.Abilities.Heroes
         [NonSerialized] private List<DodgeBall> _enemyHeld;
         [NonSerialized] private List<DodgeBall> _free;
         [NonSerialized] private List<DodgeballPlayer> _receivers;
+        [NonSerialized] private List<Vector3> _respawnPoints;
+        /// <summary>Vanished balls whose return (Despawned -> back in play) we are watching for the arrival smoke.</summary>
+        [NonSerialized] private List<DodgeBall> _awaitingReturn;
+        [NonSerialized] private Action<DodgeBall, BallState, BallState> _onVanishedBallStateChanged;
 
         /// <summary>Parameterless constructor (roster factory / SerializeReference).</summary>
         public HoudiniGrandVanish()
@@ -83,14 +91,26 @@ namespace DodgeballUltra.Abilities.Heroes
             _enemyHeld = new List<DodgeBall>(6);
             _free = new List<DodgeBall>(6);
             _receivers = new List<DodgeballPlayer>(3);
+            _respawnPoints = new List<Vector3>(6);
+            _awaitingReturn = new List<DodgeBall>(6);
+            _onVanishedBallStateChanged = OnVanishedBallStateChanged;
         }
 
         protected override bool CanActivateCustom(out AbilityFailReason reason)
         {
             reason = AbilityFailReason.None;
-            if (BallManager.Instance == null)
+            var manager = BallManager.Instance;
+            if (manager == null)
             {
                 reason = AbilityFailReason.Custom;
+                return false;
+            }
+
+            // Never burn a full meter on an empty trick: something must be held by an enemy or lying free.
+            CountBalls(manager, Owner, out int enemyHeld, out int free);
+            if (enemyHeld + free == 0)
+            {
+                reason = AbilityFailReason.NoTarget;
                 return false;
             }
             return true;
@@ -129,7 +149,10 @@ namespace DodgeballUltra.Abilities.Heroes
             _enemyHeld?.Clear();
             _free?.Clear();
             _receivers?.Clear();
+            StopWatchingReturns(); // the ball manager re-places every match ball for the new round
         }
+
+        protected override void OnUnequip() => StopWatchingReturns();
 
         /// <summary>Scores enemy ball control: best when the enemies are loaded up, bonus when behind.</summary>
         public override float EvaluateAIUtility(in AbilityAIContext ctx)
@@ -137,15 +160,7 @@ namespace DodgeballUltra.Abilities.Heroes
             var manager = BallManager.Instance;
             if (Data == null || manager == null || ctx.Self == null) return 0f;
 
-            int enemyHeld = 0, free = 0;
-            var balls = manager.MatchBalls;
-            for (int i = 0; i < balls.Count; i++)
-            {
-                var b = balls[i];
-                if (b == null) continue;
-                if (b.State == BallState.Held && b.Holder != null && PlayerRegistry.AreEnemies(ctx.Self, b.Holder)) enemyHeld++;
-                else if (b.State == BallState.Free) free++;
-            }
+            CountBalls(manager, ctx.Self, out int enemyHeld, out int free);
 
             float u = 0f;
             if (enemyHeld >= aiMinEnemyHeldBalls) u = 0.6f + 0.15f * (enemyHeld - aiMinEnemyHeldBalls);
@@ -162,11 +177,13 @@ namespace DodgeballUltra.Abilities.Heroes
             if (count == 0) return;
 
             var court = Court.Instance;
-            List<Vector3> respawnPoints = court != null ? court.GetOpeningBallPositions(count) : null;
+            _respawnPoints.Clear();
+            if (court != null) court.GetOpeningBallPositions(count, _respawnPoints);
 
             for (int i = 0; i < count; i++)
             {
                 var ball = _enemyHeld[i];
+                if (ball == null) continue;
                 var holder = ball.Holder;
                 Vector3 from = ball.transform.position;
 
@@ -177,8 +194,9 @@ namespace DodgeballUltra.Abilities.Heroes
                     if (holder.Combat.HeldBall == ball) holder.Combat.DropBall(Vector3.zero);
                 }
 
-                Vector3 respawn = RespawnPoint(court, respawnPoints, i, count);
+                Vector3 respawn = RespawnPoint(court, i, count);
                 ball.Despawn(despawnSeconds, respawn);
+                WatchForReturn(ball);
 
                 VfxManager.Spawn(VfxId.VanishSmoke, from, Quaternion.identity, smokeScale, smokeTint);
                 AudioManager.PlayAt(SfxId.Teleport, from, 0.8f, 0.9f);
@@ -186,23 +204,76 @@ namespace DodgeballUltra.Abilities.Heroes
             }
         }
 
-        private Vector3 RespawnPoint(Court court, List<Vector3> points, int index, int count)
+        /// <summary>
+        /// Respawn point <paramref name="index"/> of <paramref name="count"/>: spread across the court width like the opening
+        /// rush (<see cref="Court.GetOpeningBallPositions(int, List{Vector3})"/>) but placed exactly ON the centre line, and
+        /// <see cref="respawnHeight"/> above the floor so the ball drops back into play.
+        /// </summary>
+        private Vector3 RespawnPoint(Court court, int index, int count)
         {
-            if (points != null && index < points.Count)
-            {
-                Vector3 p = points[index];
-                p.y = court.FloorY + respawnHeight;
-                return p;
-            }
+            if (court == null) return new Vector3(0f, respawnHeight, 0f);
 
-            if (court != null)
+            float x;
+            if (index < _respawnPoints.Count)
+            {
+                x = _respawnPoints[index].x;
+            }
+            else
             {
                 // Evenly across the centre line.
                 float t = (index + 0.5f) / Mathf.Max(1, count);
-                float x = court.Center.x + (t - 0.5f) * court.width * 0.8f;
-                return new Vector3(x, court.FloorY + respawnHeight, court.Center.z);
+                x = court.Center.x + (t - 0.5f) * court.width * 0.8f;
             }
-            return new Vector3(0f, respawnHeight, 0f);
+            return new Vector3(x, court.FloorY + respawnHeight, court.Center.z);
+        }
+
+        /// <summary>Subscribes to <paramref name="ball"/>'s state changes to puff it back into existence when it returns.</summary>
+        private void WatchForReturn(DodgeBall ball)
+        {
+            if (ball.State != BallState.Despawned || _awaitingReturn.Contains(ball)) return;
+            ball.StateChanged += _onVanishedBallStateChanged;
+            _awaitingReturn.Add(ball);
+        }
+
+        private void OnVanishedBallStateChanged(DodgeBall ball, BallState previous, BallState current)
+        {
+            if (ball == null || current == BallState.Despawned) return;
+
+            // Back in play (normally Free, dropping onto the centre line): the arrival end of the vanishing act.
+            ball.StateChanged -= _onVanishedBallStateChanged;
+            _awaitingReturn.Remove(ball);
+            if (previous != BallState.Despawned) return; // left the despawn some other way (round reset etc.)
+
+            Vector3 at = ball.transform.position;
+            VfxManager.Spawn(VfxId.VanishSmoke, at, Quaternion.identity, smokeScale * 0.8f, smokeTint);
+            AudioManager.PlayAt(SfxId.Teleport, at, 0.6f, 1.1f);
+        }
+
+        private void StopWatchingReturns()
+        {
+            if (_awaitingReturn == null) return;
+            for (int i = 0; i < _awaitingReturn.Count; i++)
+            {
+                var ball = _awaitingReturn[i];
+                if (ball != null) ball.StateChanged -= _onVanishedBallStateChanged;
+            }
+            _awaitingReturn.Clear();
+        }
+
+        /// <summary>Counts match balls held by enemies of <paramref name="self"/> and balls lying free (allocation-free).</summary>
+        private static void CountBalls(BallManager manager, DodgeballPlayer self, out int enemyHeld, out int free)
+        {
+            enemyHeld = 0;
+            free = 0;
+            var balls = manager.MatchBalls;
+            if (balls == null) return;
+            for (int i = 0; i < balls.Count; i++)
+            {
+                var b = balls[i];
+                if (b == null || b.IsAbilityBall) continue;
+                if (b.State == BallState.Held && b.Holder != null && PlayerRegistry.AreEnemies(self, b.Holder)) enemyHeld++;
+                else if (b.State == BallState.Free) free++;
+            }
         }
 
         private void SummonFreeBalls()

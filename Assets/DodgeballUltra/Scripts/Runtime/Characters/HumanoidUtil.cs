@@ -28,13 +28,21 @@ namespace DodgeballUltra.Characters
         public Vector3 FingerWorld(Transform hand) => hand != null ? hand.TransformDirection(FingerLocal) : Vector3.forward;
 
         /// <summary>
-        /// World rotation the hand bone must have so that its fingers point along <paramref name="fingerWorld"/> and its palm
-        /// faces <paramref name="palmNormalWorld"/>. Used by the IK controller to orient hands (palms toward the ball).
+        /// World rotation the hand bone must have so that its palm faces exactly <paramref name="palmNormalWorld"/> and its
+        /// fingers point as close as possible to <paramref name="fingerWorld"/>. Used by the IK controller to orient hands
+        /// (palms toward the ball).
         /// </summary>
         public Quaternion BoneRotationFor(Vector3 fingerWorld, Vector3 palmNormalWorld)
         {
+            if (palmNormalWorld.sqrMagnitude < 1e-8f) palmNormalWorld = Vector3.up;
+            palmNormalWorld.Normalize();
+            Vector3 finger = Vector3.ProjectOnPlane(fingerWorld, palmNormalWorld);
+            if (finger.sqrMagnitude < 1e-8f) finger = Vector3.ProjectOnPlane(Vector3.forward, palmNormalWorld);
+            if (finger.sqrMagnitude < 1e-8f) finger = Vector3.ProjectOnPlane(Vector3.right, palmNormalWorld);
+
+            // Columns: Z = fingers, Y = palm normal (both orthonormal), in bone-local and in world space.
             Quaternion localBasis = Quaternion.LookRotation(FingerLocal, NormalLocal);
-            Quaternion worldBasis = Quaternion.LookRotation(fingerWorld, palmNormalWorld);
+            Quaternion worldBasis = Quaternion.LookRotation(finger.normalized, palmNormalWorld);
             return worldBasis * Quaternion.Inverse(localBasis);
         }
     }

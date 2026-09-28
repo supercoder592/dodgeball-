@@ -1052,6 +1052,11 @@ namespace DodgeballUltra.AI
                     case BotBehaviour.Retrieve: ExecuteRetrieve(ref intent, now, ref move, ref sprint, ref look); break;
                     case BotBehaviour.Attack: ExecuteAttack(ref intent, now, deltaTime, ref move, ref sprint, ref look); break;
                     case BotBehaviour.Pass: ExecutePass(ref intent, now, ref move, ref sprint, ref look); break;
+                    case BotBehaviour.Idle:
+                        // Before the first decision (e.g. reacting to "GO!"): stand and watch.
+                        Destination = self.Position;
+                        look = ChooseWatchPoint();
+                        break;
                     default: ExecutePosition(now, ref move, ref sprint, ref look); break;
                 }
             }
@@ -1191,7 +1196,7 @@ namespace DodgeballUltra.AI
 
             float strafe = _steering.UpdateStrafe(now, deltaTime, _profile.strafeAmplitude, _rng);
             var spot = _steering.AttackSpot(self, target, _inner, _profile, _aggression, attackLineDepthMin, attackLineDepthMax,
-                idealRangeMax, strafe, awarenessRadius);
+                idealRangeMin, idealRangeMax, strafe, awarenessRadius);
             spot.y = self.Position.y;
             Destination = spot;
 

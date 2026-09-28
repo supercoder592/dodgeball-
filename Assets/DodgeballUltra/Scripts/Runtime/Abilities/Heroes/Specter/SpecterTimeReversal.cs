@@ -181,18 +181,27 @@ namespace DodgeballUltra.Abilities.Heroes
 
         public override float EvaluateAIUtility(in AbilityAIContext ctx)
         {
-            if (Data == null || Owner == null || !Owner.IsInfield) return 0f;
+            if (Data == null || Owner == null || !Owner.IsTargetable) return 0f;
             float w = Data.aiWeight;
 
+            // Already untouchable (Precognition Dodge, revival grace): the insurance would be wasted right now.
+            var status = Owner.Status;
+            if (status != null && status.Has(StatusEffectType.Invulnerable)) return 0f;
+
+            // A ready Precognition Dodge answers a single incoming ball more cheaply: keep the ultimate as the back-up.
+            float dodgeReadyFactor = 1f;
+            var abilities = Owner.Abilities;
+            if (abilities != null && abilities.Skill is SpecterPrecognitionDodge dodge && dodge.IsReady) dodgeReadyFactor = 0.5f;
+
             // Imminent incoming ball: cast the insurance now.
-            if (ctx.IncomingBall != null && ctx.IncomingTimeToImpact <= aiThreatWindow) return w;
+            if (ctx.IncomingBall != null && ctx.IncomingTimeToImpact <= aiThreatWindow) return w * dodgeReadyFactor;
 
             // An enemy is winding up a throw nearby: likely target soon.
             var enemy = ctx.NearestEnemy;
             if (enemy != null && enemy.Combat != null && enemy.Combat.IsCharging && ctx.NearestEnemyDistance <= aiChargingEnemyRange)
-                return w * 0.8f;
+                return w * 0.8f * dodgeReadyFactor;
 
-            // Last one standing: never waste the ultimate, but keep it for real danger.
+            // No danger: never waste the ultimate, keep it for a real threat.
             return 0f;
         }
 

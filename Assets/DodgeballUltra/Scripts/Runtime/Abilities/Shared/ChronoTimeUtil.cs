@@ -212,56 +212,70 @@ namespace DodgeballUltra.Abilities.Heroes
         }
 
         /// <summary>
-        /// Restores <paramref name="ball"/> to its state <paramref name="secondsAgo"/> seconds ago:
+        /// Restores <paramref name="ball"/> to its state <paramref name="secondsAgo"/> seconds ago. Whether a live ball's
+        /// current flight already existed back then is decided from <see cref="DodgeBall.LaunchTime"/> (not from snapshot
+        /// timestamps, which clamp to the oldest sample when the history is shorter than the rewind):
         /// <list type="bullet">
-        /// <item>Live ball whose snapshot belongs to the current flight: recorded position and velocity, still live.</item>
-        /// <item>Live match ball whose current throw had not happened yet: back to its recorded position with its recorded
-        /// velocity, as a free ball (the throw is undone, rally reset).</item>
-        /// <item>Live ability projectile that did not exist yet: recycled (erased from the timeline).</item>
-        /// <item>Free / stasis balls: teleported to the recorded position with the recorded velocity.</item>
-        /// <item>Held / despawned balls, and snapshots taken while despawned: skipped.</item>
+        /// <item>Live ball launched before the rewind point: recorded position and velocity, still live (the trajectory is
+        /// rewound).</item>
+        /// <item>Live match ball launched after the rewind point: the throw is undone - the ball drops as a free ball
+        /// (rally reset) where it was back then, or at its release point when the history does not reach that far.</item>
+        /// <item>Live ability projectile launched after the rewind point: recycled (it never existed back then). No history
+        /// is needed for this.</item>
+        /// <item>Free / stasis balls: teleported to the recorded position (stasis balls stay frozen there).</item>
+        /// <item>Held / despawned balls, balls without history and snapshots taken while despawned: skipped.</item>
         /// </list>
         /// </summary>
         public static ChronoRewindResult TryRewindBall(DodgeBall ball, float secondsAgo, out Vector3 from, out Vector3 to)
         {
             from = to = ball != null ? ball.transform.position : Vector3.zero;
-            if (ball == null || ball.Rewind == null) return ChronoRewindResult.Skipped;
+            if (ball == null) return ChronoRewindResult.Skipped;
 
             BallState state = ball.State;
             if (state == BallState.Held || state == BallState.Despawned) return ChronoRewindResult.Skipped;
-            if (!ball.Rewind.TryGetSnapshot(secondsAgo, out RewindSnapshot snap)) return ChronoRewindResult.Skipped;
+
+            float rewindTime = Time.time - Mathf.Max(0f, secondsAgo);
+            bool thrownAfterRewindPoint = state == BallState.Live && ball.LaunchTime > rewindTime + LaunchTimeEpsilon;
+
+            // An ability projectile conjured after the rewind point never existed back then: erase it.
+            if (thrownAfterRewindPoint && ball.IsAbilityBall)
+            {
+                if (BallManager.Instance != null) BallManager.Instance.Recycle(ball);
+                else ball.MakeFree(Vector3.zero, true);
+                return ChronoRewindResult.Erased;
+            }
+
+            var recorder = ball.Rewind;
+            if (recorder == null || !recorder.TryGetSnapshotAt(rewindTime, out RewindSnapshot snap)) return ChronoRewindResult.Skipped;
 
             var recordedState = (BallState)snap.State;
             if (recordedState == BallState.Despawned) return ChronoRewindResult.Skipped;
 
-            to = snap.Position;
-
             if (state == BallState.Live)
             {
-                bool sameFlight = recordedState == BallState.Live && snap.Time >= ball.LaunchTime - LaunchTimeEpsilon;
-                if (sameFlight)
+                if (!thrownAfterRewindPoint)
                 {
-                    ball.TeleportTo(snap.Position, snap.Velocity);
+                    // Same flight: back along its own trajectory, still live, with the velocity it had back then.
+                    to = snap.Position;
+                    ball.TeleportTo(to, snap.Velocity);
                     return ChronoRewindResult.Rewound;
                 }
 
-                if (ball.IsAbilityBall)
-                {
-                    // The projectile was conjured after the rewind point: it never existed back then.
-                    if (BallManager.Instance != null) BallManager.Instance.Recycle(ball);
-                    else ball.MakeFree(Vector3.zero, true);
-                    to = from;
-                    return ChronoRewindResult.Erased;
-                }
-
-                // The throw had not happened yet: the ball goes back where it was, as a plain free ball.
-                ball.TeleportTo(snap.Position, snap.Velocity);
-                ball.MakeFree(snap.Velocity, true);
+                // The throw had not happened yet. The snapshot is only usable when it predates the launch; otherwise the
+                // history was cleared after the release (teleport, respawn) and the release point is the best estimate.
+                bool snapshotPredatesThrow = snap.Time < ball.LaunchTime - LaunchTimeEpsilon;
+                to = snapshotPredatesThrow ? snap.Position : ball.LaunchOrigin;
+                // A ball that was resting / rolling keeps its (slow) recorded motion; one that was in a hand or in an older
+                // flight simply drops where it was - a free ball flying at throw speed would read as a phantom throw.
+                Vector3 velocity = snapshotPredatesThrow && recordedState == BallState.Free ? snap.Velocity : Vector3.zero;
+                ball.TeleportTo(to, velocity);
+                ball.MakeFree(velocity, true);
                 return ChronoRewindResult.ThrowUndone;
             }
 
-            // Free or Stasis: plain teleport, keeping the current state.
-            ball.TeleportTo(snap.Position, state == BallState.Stasis ? Vector3.zero : snap.Velocity);
+            // Free or Stasis: plain teleport, keeping the current state (a stasis ball stays frozen in place).
+            to = snap.Position;
+            ball.TeleportTo(to, state == BallState.Stasis ? Vector3.zero : snap.Velocity);
             return ChronoRewindResult.Rewound;
         }
 

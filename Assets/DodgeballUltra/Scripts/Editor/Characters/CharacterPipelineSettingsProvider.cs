@@ -22,7 +22,7 @@ namespace DodgeballUltra.Editor.Characters
                 }),
                 guiHandler = _ =>
                 {
-                    CharacterPipelineSettings settings = CharacterPipelineSettings.instance;
+                    CharacterPipelineSettings settings = CharacterPipelineSettings.Instance;
                     if (serialized == null || serialized.targetObject != settings) serialized = new SerializedObject(settings);
                     serialized.Update();
 

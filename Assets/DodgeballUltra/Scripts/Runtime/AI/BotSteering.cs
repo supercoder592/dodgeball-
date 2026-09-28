@@ -95,10 +95,13 @@ namespace DodgeballUltra.AI
 
         /// <summary>
         /// Attack spot while holding a ball: near the centre line (depth from aggression), drifting toward the target's lane
-        /// plus the strafe offset. From the outfield: behind the target, as close to the court as the strip allows.
+        /// plus the strafe offset, backing off when the target stands so close to the line that the throw would come from
+        /// inside <paramref name="idealRangeMin"/>. From the outfield: behind the target, as close to the court as the strip
+        /// allows.
         /// </summary>
         public Vector3 AttackSpot(DodgeballPlayer self, DodgeballPlayer target, Bounds inner, BotDifficultyProfile profile,
-            float aggression, float minLineDepth, float maxLineDepth, float idealRangeMax, float strafe, float awarenessRadius)
+            float aggression, float minLineDepth, float maxLineDepth, float idealRangeMin, float idealRangeMax, float strafe,
+            float awarenessRadius)
         {
             var center = BotWorld.CourtCenter;
             var pos = self.Position;
@@ -115,6 +118,10 @@ namespace DodgeballUltra.AI
             float s = BotWorld.SideSign(self.Team);
             float depth = Mathf.Lerp(maxLineDepth, minLineDepth, Mathf.Clamp01(aggression));
             if (BotWorld.PlanarDistance(pos, target.Position) > idealRangeMax) depth = minLineDepth;
+
+            // Keep at least the preferred minimum range (6 m by default) from a target hugging the centre line.
+            float targetDepth = Mathf.Abs(target.Position.z - center.z);
+            depth = Mathf.Max(depth, Mathf.Min(idealRangeMin - targetDepth, maxLineDepth + 2f));
 
             var spot = new Vector3(Mathf.Lerp(pos.x, target.Position.x, 0.5f) + strafe, pos.y, center.z + s * depth);
 

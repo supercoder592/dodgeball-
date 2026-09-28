@@ -56,12 +56,17 @@ namespace DodgeballUltra.Abilities.Heroes
         [Tooltip("Longest pulse length (s). The pulse lasts until the predicted impact, clamped to [min, max].")]
         [Range(0.1f, 2f)] public float maxPulseDuration = 0.8f;
 
+        /// <summary>
+        /// Tolerance (s) when deciding whether a tracked ball was launched again after detection. The throw that created
+        /// the threat is launched in the same frame as its <see cref="BallThrownEvent"/>, so anything later is a new throw.
+        /// </summary>
+        private const float RelaunchEpsilon = 0.05f;
+
         /// <summary>One ball that is currently considered locked on to Specter.</summary>
         private struct Threat
         {
             public DodgeBall Ball;
-            public float LaunchTime;   // DodgeBall.LaunchTime at detection: detects re-throws of the same ball
-            public float TrackedAt;    // Time.time at detection
+            public float TrackedAt;    // Time.time at detection; a DodgeBall.LaunchTime after this means the ball was re-thrown
             public float SpeedKmh;
         }
 
@@ -142,7 +147,7 @@ namespace DodgeballUltra.Abilities.Heroes
 
             // Same ball re-thrown: replace the entry silently (the new Active=true event supersedes the old one).
             int existing = IndexOf(e.Ball);
-            var threat = new Threat { Ball = e.Ball, LaunchTime = e.Ball.LaunchTime, TrackedAt = Now, SpeedKmh = e.SpeedKmh };
+            var threat = new Threat { Ball = e.Ball, TrackedAt = Now, SpeedKmh = e.SpeedKmh };
             if (existing >= 0)
             {
                 _threats[existing] = threat;
@@ -177,7 +182,10 @@ namespace DodgeballUltra.Abilities.Heroes
         {
             var ball = threat.Ball;
             if (ball == null || !ball.IsLive) return true;                        // caught, hit, bounced, stasis, despawned
-            if (!Mathf.Approximately(ball.LaunchTime, threat.LaunchTime)) return true; // it is a different throw now
+            // Launched again after we started tracking it (caught and re-thrown between two ticks, teleported into a hand
+            // and thrown...): it is a different throw now. Comparing against the detection time instead of a cached
+            // LaunchTime keeps this correct whether Combat publishes BallThrownEvent before or after DodgeBall.Launch.
+            if (ball.LaunchTime > threat.TrackedAt + RelaunchEpsilon) return true;
             if (now - threat.TrackedAt > maxTrackSeconds) return true;
 
             // Passed: the ball is beyond Specter along its own flight direction.

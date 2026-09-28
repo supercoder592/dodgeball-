@@ -33,16 +33,15 @@ namespace DodgeballUltra.Arena
 
         private void OnDestroy()
         {
-            for (int i = 0; i < m_owned.Count; i++)
+            // Edit mode: the editor scene builder may have saved these meshes as assets - never destroy them there.
+            // Play mode: the list is non-serialized, so it only ever holds meshes built during this play session.
+            if (Application.isPlaying)
             {
-                UnityEngine.Object obj = m_owned[i];
-                if (obj == null) continue;
-#if UNITY_EDITOR
-                // The editor scene builder may have saved the mesh as an asset in the meantime.
-                if (UnityEditor.EditorUtility.IsPersistent(obj)) continue;
-#endif
-                if (Application.isPlaying) Destroy(obj);
-                else DestroyImmediate(obj);
+                for (int i = 0; i < m_owned.Count; i++)
+                {
+                    UnityEngine.Object obj = m_owned[i];
+                    if (obj != null) Destroy(obj);
+                }
             }
             m_owned.Clear();
         }

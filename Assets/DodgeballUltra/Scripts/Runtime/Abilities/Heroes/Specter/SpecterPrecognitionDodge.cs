@@ -15,9 +15,17 @@ namespace DodgeballUltra.Abilities.Heroes
     /// On cast Specter gets the <see cref="StatusEffectType.Invulnerable"/> status for the dodge window and registers
     /// itself as an <see cref="IIncomingHitFilter"/> that cancels every non-<see cref="HitContext.Unblockable"/> hit during
     /// that window (Rayne's Hyperbeam is, by definition, unblockable and ignores evasion). The body drops into a
-    /// momentum-preserving slide (<see cref="PlayerMotor.TryStartSlide"/>) along the move input, or - without input -
-    /// sideways out of the flight line of the most threatening ball, choosing the side with room inside the court. The
-    /// slide is kicked to <see cref="dodgeSpeed"/> and then bleeds speed through the motor's slide friction.
+    /// momentum-preserving ability slide (<see cref="PlayerMotor.TryStartSlide(Vector3, float, float, bool)"/>, which
+    /// ignores the normal slide cooldown so the skill never fizzles) along the move input, or - without input - sideways
+    /// out of the flight line of the most threatening ball, choosing the side with room inside the court. The slide starts
+    /// at <see cref="dodgeSpeed"/> (never slower than the current momentum), lasts the dodge window and bleeds speed through
+    /// the motor's slide friction; the state machine is moved into Sliding so a throw wind-up or catch stance cannot cut it
+    /// short. Cast in the air it becomes a short planar air-dodge with the same invulnerability.
+    /// </para>
+    /// <para>
+    /// Evasion feedback (burst where the ball would have struck, <see cref="EvadedThisDodge"/>) is driven by
+    /// <see cref="PlayerHealth.HitReceived"/> with <see cref="HitOutcome.Negated"/>, because the health pipeline negates
+    /// Invulnerable targets before any filter runs; the filter itself is the fallback when no status controller exists.
     /// </para>
     /// <para>
     /// The dodge respects crowd control: it cannot be used while <see cref="StatusEffectType.DodgeDisabled"/> (Elsa's
@@ -36,6 +44,9 @@ namespace DodgeballUltra.Abilities.Heroes
         [Tooltip("Planar speed (m/s) the slide is kicked to. The motor's slide friction bleeds it off " +
                  "(7.5 m/s over 0.8 s with 6.5 m/s² friction ≈ 4 m of travel).")]
         [Range(3f, 14f)] public float dodgeSpeed = 7.5f;
+
+        [Tooltip("Planar speed (m/s) of the dodge when cast in the air (no floor to slide on: a short air-dodge).")]
+        [Range(0f, 10f)] public float airDodgeSpeed = 5f;
 
         [Tooltip("Move-input magnitude above which the dodge follows the input instead of auto-evading sideways.")]
         [Range(0.05f, 0.9f)] public float inputThreshold = 0.25f;
@@ -85,6 +96,8 @@ namespace DodgeballUltra.Abilities.Heroes
         // ------------------------------------------------------------------ runtime state
         [NonSerialized] private bool _filterRegistered;
         [NonSerialized] private PlayerHealth _filterHealth;
+        [NonSerialized] private PlayerHealth _hitEventHealth;
+        [NonSerialized] private Action<PlayerHealth, HitContext, HitOutcome> _onHitReceived; // cached: no per-cast allocation
         [NonSerialized] private VfxHandle _trail;
         [NonSerialized] private float _nextAfterimageTime;
         [NonSerialized] private int _evadedThisDodge;
@@ -103,13 +116,19 @@ namespace DodgeballUltra.Abilities.Heroes
 
         // ------------------------------------------------------------------ activation
 
+        protected override void OnInitialize()
+        {
+            _onHitReceived = OnHitReceived;
+        }
+
         protected override bool CanActivateCustom(out AbilityFailReason reason)
         {
             reason = AbilityFailReason.None;
             var status = Owner.Status;
+            // Spec: dodges are disabled by Absolute Zero (DodgeDisabled); a rooted body cannot slide either.
             if (status != null && (status.Has(StatusEffectType.DodgeDisabled) || status.Has(StatusEffectType.Rooted)))
             {
-                reason = AbilityFailReason.Custom;
+                reason = AbilityFailReason.CannotAct;
                 return false;
             }
             if (Owner.Motor == null)
@@ -133,10 +152,7 @@ namespace DodgeballUltra.Abilities.Heroes
 
             // 2) Sliding dodge along the input, or sideways away from the most dangerous ball.
             Vector3 direction = ResolveDodgeDirection();
-            var motor = Owner.Motor;
-            motor.TryStartSlide(direction);
-            float carried = Mathf.Max(0f, Vector3.Dot(motor.PlanarVelocity, direction));
-            motor.SetPlanarVelocity(direction * Mathf.Max(dodgeSpeed, carried));
+            StartDodgeMotion(direction, window);
 
             // 3) Presentation.
             Color tint = afterimageTint;
@@ -146,6 +162,31 @@ namespace DodgeballUltra.Abilities.Heroes
             if (Owner.IsLocalPlayer && localScreenPulse > 0f) ScreenFx.Pulse(ScreenPulse.TimeRewind, localScreenPulse, 0.3f);
 
             _nextAfterimageTime = Now; // first afterimage right away
+        }
+
+        /// <summary>
+        /// Grounded: an ability slide for the whole window (ignores the normal slide cooldown, keeps any higher momentum),
+        /// then the state machine follows into Sliding. Airborne: a planar air-dodge impulse (there is no floor to slide on).
+        /// </summary>
+        private void StartDodgeMotion(Vector3 direction, float window)
+        {
+            var motor = Owner.Motor;
+            if (motor == null) return;
+
+            if (motor.IsGrounded && motor.TryStartSlide(direction, dodgeSpeed, window, true))
+            {
+                // Leaving ChargingThrow / Catching for Sliding: those states would otherwise switch the motor back to their
+                // own movement mode next frame and end the slide. (Grounded / Sprinting follow a motor slide on their own.)
+                var fsm = Owner.StateMachine;
+                if (fsm != null && !fsm.IsIn(PlayerStateId.Sliding) && fsm.CanAct) fsm.ChangeState(PlayerStateId.Sliding);
+                return;
+            }
+
+            // Airborne (or the motor refused the slide): keep the invulnerability and shove the body sideways instead,
+            // never slower than the momentum it already carries along that direction.
+            float speed = motor.IsGrounded ? dodgeSpeed : airDodgeSpeed;
+            float carried = Mathf.Max(0f, Vector3.Dot(motor.PlanarVelocity, direction));
+            if (speed > 0f) motor.SetPlanarVelocity(direction * Mathf.Max(speed, carried));
         }
 
         protected override void OnTick(float deltaTime)
@@ -172,11 +213,19 @@ namespace DodgeballUltra.Abilities.Heroes
             _trail = default;
         }
 
-        protected override void OnUnequip() => UnregisterFilter();
+        protected override void OnUnequip()
+        {
+            UnregisterFilter();
+            VfxManager.StopEffect(_trail);
+            _trail = default;
+        }
 
         // ------------------------------------------------------------------ IIncomingHitFilter
 
-        /// <summary>Auto-evades every incoming ball while the dodge is active (unblockable balls excepted).</summary>
+        /// <summary>
+        /// Auto-evades every incoming ball while the dodge is active (unblockable balls excepted). Normally the Invulnerable
+        /// status already negated the hit before filters run; this keeps the evasion intact when no status controller exists.
+        /// </summary>
         public void FilterHit(ref HitContext hit)
         {
             if (!IsActive || hit.Cancelled) return;
@@ -184,12 +233,19 @@ namespace DodgeballUltra.Abilities.Heroes
 
             hit.Cancelled = true;
             hit.CancelReason = "Precognition Dodge";
+        }
+
+        /// <summary>Every negated hit during the dodge is an evaded ball: count it and show where it would have struck.</summary>
+        private void OnHitReceived(PlayerHealth health, HitContext hit, HitOutcome outcome)
+        {
+            if (!IsActive || outcome != HitOutcome.Negated || Owner == null) return;
             _evadedThisDodge++;
 
             if (evadeBurstScale > 0f)
             {
                 Vector3 dir = hit.BallVelocity.sqrMagnitude > 1e-4f ? hit.BallVelocity.normalized : Owner.Forward;
-                VfxManager.Spawn(VfxId.DodgeAfterimage, hit.Point, Quaternion.LookRotation(dir, Vector3.up), evadeBurstScale, afterimageTint);
+                Vector3 point = hit.Point != Vector3.zero ? hit.Point : Owner.ChestPosition;
+                VfxManager.Spawn(VfxId.DodgeAfterimage, point, Quaternion.LookRotation(dir, Vector3.up), evadeBurstScale, afterimageTint);
             }
         }
 
@@ -229,20 +285,40 @@ namespace DodgeballUltra.Abilities.Heroes
             return dir.sqrMagnitude > 1e-4f ? dir.normalized : Vector3.Cross(Vector3.up, Owner.Forward).normalized;
         }
 
+        /// <summary>Registers the evasion filter and the evasion-feedback listener on Specter's health (idempotent).</summary>
         private void RegisterFilter()
         {
-            if (_filterRegistered || Owner.Health == null) return;
-            _filterHealth = Owner.Health;
-            _filterHealth.AddHitFilter(this);
-            _filterRegistered = true;
+            var health = Owner.Health;
+            if (health == null) return;
+
+            if (!_filterRegistered)
+            {
+                _filterHealth = health;
+                _filterHealth.AddHitFilter(this);
+                _filterRegistered = true;
+            }
+
+            if (_hitEventHealth == null && _onHitReceived != null)
+            {
+                _hitEventHealth = health;
+                _hitEventHealth.HitReceived += _onHitReceived;
+            }
         }
 
         private void UnregisterFilter()
         {
-            if (!_filterRegistered) return;
-            if (_filterHealth != null) _filterHealth.RemoveHitFilter(this);
-            _filterHealth = null;
-            _filterRegistered = false;
+            if (_filterRegistered)
+            {
+                if (_filterHealth != null) _filterHealth.RemoveHitFilter(this);
+                _filterHealth = null;
+                _filterRegistered = false;
+            }
+
+            if (_hitEventHealth != null)
+            {
+                _hitEventHealth.HitReceived -= _onHitReceived;
+                _hitEventHealth = null;
+            }
         }
     }
 }

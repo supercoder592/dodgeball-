@@ -77,6 +77,13 @@ namespace DodgeballUltra.Abilities.Heroes
             options.Payload = payload;
 
             _lastBall = AbilityUtil.ThrowAbilityBall(Owner, options);
+            if (_lastBall == null)
+            {
+                // The ball pool could not supply a projectile: nothing was thrown, so do not charge the 13 s cooldown.
+                EndAbility();
+                ResetCooldown();
+                return;
+            }
 
             Vector3 hand = Owner.Combat != null ? Owner.Combat.GetThrowOrigin() : Owner.ChestPosition;
             if (castBurstScale > 0f) VfxManager.Spawn(VfxId.IceBurst, hand, Quaternion.LookRotation(Owner.Forward), castBurstScale, iceTint);

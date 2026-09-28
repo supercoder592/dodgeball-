@@ -43,6 +43,7 @@ namespace DodgeballUltra.UI
         private static Sprite s_white;
         private static Sprite s_rounded;
         private static Sprite s_roundedSmall;
+        private static Sprite s_roundedOutline;
         private static Sprite s_circle;
         private static Sprite s_ring;
         private static Sprite s_softGlow;
@@ -55,7 +56,7 @@ namespace DodgeballUltra.UI
         private static void ResetStatics()
         {
             s_font = null;
-            s_white = s_rounded = s_roundedSmall = s_circle = s_ring = s_softGlow = s_vignette = s_triangle = null;
+            s_white = s_rounded = s_roundedSmall = s_roundedOutline = s_circle = s_ring = s_softGlow = s_vignette = s_triangle = null;
             s_horizontalFade = s_verticalFade = null;
         }
 
@@ -113,6 +114,9 @@ namespace DodgeballUltra.UI
 
         /// <summary>32 px rounded rectangle, 6 px radius, 9-sliced (chips, small buttons, bars).</summary>
         public static Sprite RoundedSmallSprite => s_roundedSmall != null ? s_roundedSmall : (s_roundedSmall = BuildRounded("DU_UI_RoundedSmall", 32, 6f));
+
+        /// <summary>64 px rounded outline (3 px stroke, 14 px radius), 9-sliced: focus rings and frames drawn over content.</summary>
+        public static Sprite RoundedOutlineSprite => s_roundedOutline != null ? s_roundedOutline : (s_roundedOutline = BuildRounded("DU_UI_RoundedOutline", 64, 14f, 3f));
 
         /// <summary>Anti-aliased disc (radial fills, dots).</summary>
         public static Sprite CircleSprite
@@ -247,20 +251,29 @@ namespace DodgeballUltra.UI
             return Mathf.Sqrt(dx * dx + dy * dy);
         }
 
-        private static Sprite BuildRounded(string name, int size, float radius)
+        private static Sprite BuildRounded(string name, int size, float radius, float stroke = 0f)
         {
             float border = Mathf.Ceil(radius) + 2f;
             return BuildSprite(name, size, size, (x, y) =>
             {
-                float px = x + 0.5f;
-                float py = y + 0.5f;
-                float cx = Mathf.Clamp(px, radius, size - radius);
-                float cy = Mathf.Clamp(py, radius, size - radius);
-                float dx = px - cx;
-                float dy = py - cy;
-                float d = Mathf.Sqrt(dx * dx + dy * dy);
-                return Mathf.Clamp01(radius - d + 0.5f);
+                float sd = RoundedBoxDistance(x, y, size, radius);
+                float fill = Mathf.Clamp01(0.5f - sd);
+                // stroke > 0: keep only a band of that width inside the edge (outline sprite).
+                return stroke > 0f ? fill * Mathf.Clamp01(sd + stroke + 0.5f) : fill;
             }, new Vector4(border, border, border, border));
+        }
+
+        /// <summary>Signed distance (px) from a pixel centre to a rounded square filling the texture (negative inside).</summary>
+        private static float RoundedBoxDistance(int x, int y, int size, float radius)
+        {
+            float half = size * 0.5f;
+            float qx = Mathf.Abs(x + 0.5f - half) - (half - radius);
+            float qy = Mathf.Abs(y + 0.5f - half) - (half - radius);
+            float ox = Mathf.Max(qx, 0f);
+            float oy = Mathf.Max(qy, 0f);
+            float outside = Mathf.Sqrt(ox * ox + oy * oy);
+            float inside = Mathf.Min(Mathf.Max(qx, qy), 0f);
+            return outside + inside - radius;
         }
 
         /// <summary>Creates a white sprite whose alpha is given per pixel by <paramref name="alpha"/>.</summary>

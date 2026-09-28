@@ -42,6 +42,8 @@ namespace DodgeballUltra.Abilities.Heroes
             var balls = BallManager.Instance;
             if (player == null || balls == null) return null;
 
+            // The contract does not promise that GetIncomingLiveBalls clears the list first: never inherit stale entries.
+            s_incoming.Clear();
             balls.GetIncomingLiveBalls(player, s_incoming);
 
             DodgeBall best = null;
