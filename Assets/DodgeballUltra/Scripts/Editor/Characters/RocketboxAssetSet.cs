@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using DodgeballUltra.Characters;
 using UnityEngine;
 
 namespace DodgeballUltra.Editor.Characters
@@ -10,8 +11,6 @@ namespace DodgeballUltra.Editor.Characters
     {
         /// <summary>Locomotion blend tree at Speed 0 (standing idle).</summary>
         Idle = 0,
-        /// <summary>Alternative idle (breathing): fallback for <see cref="Idle"/> and <see cref="Defeat"/>.</summary>
-        IdleBreathe,
         /// <summary>Locomotion blend tree at AnimatorParams.WalkSpeed.</summary>
         Walk,
         /// <summary>Locomotion blend tree at AnimatorParams.RunSpeed.</summary>
@@ -24,9 +23,7 @@ namespace DodgeballUltra.Editor.Characters
         Stunned,
         /// <summary>Cheer state (round / match won).</summary>
         Cheer,
-        /// <summary>Wave state (hero select, introductions).</summary>
-        Wave,
-        /// <summary>Defeat state (dejected).</summary>
+        /// <summary>Defeat state (shrug, round / match lost).</summary>
         Defeat,
     }
 
@@ -35,14 +32,20 @@ namespace DodgeballUltra.Editor.Characters
     {
         /// <summary>Animator usage.</summary>
         public readonly RocketboxClipRole Role;
+        /// <summary>
+        /// Repository folder suffix: "static" (in place, <c>all_animations_max_motextr_static</c>) or "xy" (planar root
+        /// motion, <c>all_animations_max_motextr_xy</c>).
+        /// </summary>
+        public readonly string Folder;
         /// <summary>File base name without gender prefix and ".max.fbx", e.g. "walk_neutral_01".</summary>
         public readonly string BaseName;
         /// <summary>Loop the clip (Loop Time + Loop Pose).</summary>
         public readonly bool Loop;
 
-        public RocketboxClip(RocketboxClipRole role, string baseName, bool loop)
+        public RocketboxClip(RocketboxClipRole role, string folder, string baseName, bool loop)
         {
             Role = role;
+            Folder = folder;
             BaseName = baseName;
             Loop = loop;
         }
@@ -77,41 +80,25 @@ namespace DodgeballUltra.Editor.Characters
         /// <summary>Manifest path relative to the project root.</summary>
         public const string ManifestRelativePath = "Tools/rocketbox_manifest.json";
 
+        /// <summary>Repository folder prefix of the motion-capture clips (followed by "static" / "xy" / "xyz").</summary>
+        public const string AnimationRepositoryPrefix = "Assets/Animations/all_animations_max_motextr_";
+
         /// <summary>
         /// Curated motion-capture set. Each clip exists for the male (m_) and female (f_) skeleton in the pinned commit:
-        /// idle/crouch/drunk/cheer/wave/sad from <c>all_animations_max_motextr_static</c> (in place), walk/run from
-        /// <c>all_animations_max_motextr_xy</c> (planar root motion, kept as root motion so clips play in place).
+        /// idle / crouch / drunk / cheer / shrug from <c>all_animations_max_motextr_static</c> (in place), walk / run / sprint
+        /// from <c>all_animations_max_motextr_xy</c> (planar root motion, kept as root motion so the clips play in place
+        /// with applyRootMotion off while their natural stride speed stays measurable).
         /// </summary>
         public static readonly RocketboxClip[] CuratedClips =
         {
-            new RocketboxClip(RocketboxClipRole.Idle, "idle_neutral_01", true),
-            new RocketboxClip(RocketboxClipRole.IdleBreathe, "idle_breathe_01", true),
-            new RocketboxClip(RocketboxClipRole.Walk, "walk_neutral_01", true),
-            new RocketboxClip(RocketboxClipRole.Run, "run_neutral_01", true),
-            new RocketboxClip(RocketboxClipRole.Sprint, "run_fast_01", true),
-            new RocketboxClip(RocketboxClipRole.Crouch, "crouch_idle", true),
-            new RocketboxClip(RocketboxClipRole.Stunned, "idle_drunk_01", true),
-            new RocketboxClip(RocketboxClipRole.Cheer, "cheer_01", false),
-            new RocketboxClip(RocketboxClipRole.Wave, "wave_01", false),
-            new RocketboxClip(RocketboxClipRole.Defeat, "gestic_listen_sad_01", true),
-        };
-
-        /// <summary>
-        /// Default hero casting (mirrors <c>HeroRosterFactory.GetDefaultAvatar</c>); used by menu shortcuts and as a fallback
-        /// when a CharacterData has no avatar name.
-        /// </summary>
-        public static readonly KeyValuePair<HeroId, string>[] DefaultHeroAvatars =
-        {
-            new KeyValuePair<HeroId, string>(HeroId.Rayne, "Sports_Male_02"),
-            new KeyValuePair<HeroId, string>(HeroId.Shadow, "Security_Male_01"),
-            new KeyValuePair<HeroId, string>(HeroId.Gale, "Sports_Female_02"),
-            new KeyValuePair<HeroId, string>(HeroId.Bear, "Fire_Male_02"),
-            new KeyValuePair<HeroId, string>(HeroId.Gouki, "Military_Male_01"),
-            new KeyValuePair<HeroId, string>(HeroId.Screws, "Construction_Male_01"),
-            new KeyValuePair<HeroId, string>(HeroId.Houdini, "Business_Male_01"),
-            new KeyValuePair<HeroId, string>(HeroId.Elsa, "Pilot_Female_01"),
-            new KeyValuePair<HeroId, string>(HeroId.Specter, "Sports_Male_04"),
-            new KeyValuePair<HeroId, string>(HeroId.Chrono, "Military_Female_01"),
+            new RocketboxClip(RocketboxClipRole.Idle, "static", "idle_neutral_01", true),
+            new RocketboxClip(RocketboxClipRole.Walk, "xy", "walk_neutral_01", true),
+            new RocketboxClip(RocketboxClipRole.Run, "xy", "run_neutral_01", true),
+            new RocketboxClip(RocketboxClipRole.Sprint, "xy", "run_fast_01", true),
+            new RocketboxClip(RocketboxClipRole.Crouch, "static", "crouch_idle", true),
+            new RocketboxClip(RocketboxClipRole.Stunned, "static", "idle_drunk_01", true),
+            new RocketboxClip(RocketboxClipRole.Cheer, "static", "cheer_01", false),
+            new RocketboxClip(RocketboxClipRole.Defeat, "static", "gestic_shrug_01", false),
         };
 
         private static readonly string[] s_textureExtensions = { ".tga", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".psd", ".exr" };
@@ -236,6 +223,35 @@ namespace DodgeballUltra.Editor.Characters
         /// <summary>Project asset path of a curated clip file.</summary>
         public static string ClipAssetPath(BodyType body, string baseName) => AnimationsFolder + "/" + ClipFileName(body, baseName);
 
+        /// <summary>
+        /// Repository path of a curated clip for <paramref name="body"/>: the manifest entry when the manifest lists the file
+        /// (in the clip's folder first, then anywhere), otherwise the conventional
+        /// <c>Assets/Animations/all_animations_max_motextr_&lt;folder&gt;/&lt;file&gt;</c>.
+        /// </summary>
+        public static string ClipRepositoryPath(BodyType body, RocketboxClip clip, RocketboxManifest manifest)
+        {
+            string file = ClipFileName(body, clip.BaseName);
+            string conventional = AnimationRepositoryPrefix + clip.Folder + "/" + file;
+            if (manifest == null || manifest.animations == null || manifest.animations.Count == 0) return conventional;
+            foreach (string path in manifest.animations)
+                if (string.Equals(path, conventional, StringComparison.OrdinalIgnoreCase)) return path;
+            return manifest.FindAnimationPath(file) ?? conventional;
+        }
+
+        /// <summary>
+        /// Curated clip files for both skeletons as (repository path, project asset path) pairs.
+        /// </summary>
+        public static List<KeyValuePair<string, string>> GetAnimationFiles(RocketboxManifest manifest)
+        {
+            var files = new List<KeyValuePair<string, string>>(CuratedClips.Length * 2);
+            foreach (RocketboxClip c in CuratedClips)
+            {
+                foreach (BodyType body in new[] { BodyType.Male, BodyType.Female })
+                    files.Add(new KeyValuePair<string, string>(ClipRepositoryPath(body, c, manifest), ClipAssetPath(body, c.BaseName)));
+            }
+            return files;
+        }
+
         /// <summary>Curated clip definition for a role.</summary>
         public static RocketboxClip GetClip(RocketboxClipRole role)
         {
@@ -355,13 +371,11 @@ namespace DodgeballUltra.Editor.Characters
             return avatar != null && avatar.IndexOf("female", StringComparison.OrdinalIgnoreCase) >= 0 ? BodyType.Female : BodyType.Male;
         }
 
-        /// <summary>Default avatar for a hero from <see cref="DefaultHeroAvatars"/> (null when unknown).</summary>
-        public static string GetDefaultAvatar(HeroId hero)
-        {
-            foreach (KeyValuePair<HeroId, string> kv in DefaultHeroAvatars)
-                if (kv.Key == hero) return kv.Value;
-            return null;
-        }
+        /// <summary>
+        /// Default avatar of a hero - the casting of <see cref="HeroRosterFactory.GetDefaultAvatar"/> (single source of truth,
+        /// also mirrored by <c>Tools/fetch_rocketbox.py</c> HERO_AVATARS).
+        /// </summary>
+        public static string GetDefaultAvatar(HeroId hero) => HeroRosterFactory.GetDefaultAvatar(hero);
 
         /// <summary>Replaces characters that are invalid in file names.</summary>
         public static string SanitizeFileName(string name)

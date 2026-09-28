@@ -69,28 +69,24 @@ HERO_AVATARS: Dict[str, str] = {
 #: ================================  ==============================================================
 #: clip                              animator usage
 #: ================================  ==============================================================
-#: idle_neutral_01                   Locomotion blend tree, Speed 0 m/s (athletic standing idle)
-#: idle_breathe_01                   fallback idle when idle_neutral_01 is missing
-#: walk_neutral_01                   Locomotion blend tree, Speed 1.6 m/s
-#: run_neutral_01                    Locomotion blend tree, Speed 4.6 m/s
-#: run_fast_01                       Locomotion blend tree, Speed 7.4 m/s (sprint)
-#: crouch_idle                       Crouch (slides + catch stance) and Airborne (tucked jump)
-#: idle_drunk_01                     Stunned (dizzy sway)
-#: cheer_01                          Cheer (round / match won)
-#: wave_01                           Wave (hero select / introductions)
-#: gestic_listen_sad_01              Defeat (dejected, head down)
+#: idle_neutral_01   (static)        Locomotion blend tree, Speed 0 m/s (athletic standing idle)
+#: walk_neutral_01   (xy)            Locomotion blend tree, Speed 1.6 m/s
+#: run_neutral_01    (xy)            Locomotion blend tree, Speed 4.6 m/s
+#: run_fast_01       (xy)            Locomotion blend tree, Speed 7.4 m/s (sprint)
+#: crouch_idle       (static)        Crouch (slides + catch stance) and Airborne (tucked jump)
+#: idle_drunk_01     (static)        Stunned (dizzy sway)
+#: cheer_01          (static)        Cheer (round / match won)
+#: gestic_shrug_01   (static)        Defeat (round / match lost)
 #: ================================  ==============================================================
 CURATED_ANIMATIONS: Tuple[str, ...] = (
     "idle_neutral_01",
-    "idle_breathe_01",
     "walk_neutral_01",
     "run_neutral_01",
     "run_fast_01",
     "crouch_idle",
     "idle_drunk_01",
     "cheer_01",
-    "wave_01",
-    "gestic_listen_sad_01",
+    "gestic_shrug_01",
 )
 
 GENDER_PREFIXES: Tuple[str, ...] = ("m_", "f_")

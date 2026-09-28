@@ -16,6 +16,9 @@
     <ProjectReference Include="RenderingHDRP.csproj" />
     <ProjectReference Include="HdrpStubs.csproj" />
     <ProjectReference Include="HdrpEditorStubs.csproj" />
+    <!-- UnityEditor.dll (2021.1 SDK) binds ScriptableObject etc. to the monolithic "UnityEngine" assembly: the facade
+         forwards those types to the module assemblies (needed by EditorWindow / Editor subclasses). -->
+    <Reference Include="UnityEngine"><HintPath>$(UnityCache)modules/lib/net45/UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEditor"><HintPath>$(UnityCache)sdk/lib/UnityEditor.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 </Project>

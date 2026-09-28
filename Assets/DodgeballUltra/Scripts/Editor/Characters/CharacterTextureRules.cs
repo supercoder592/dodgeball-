@@ -56,6 +56,8 @@ namespace DodgeballUltra.Editor.Characters
         {
             if (RocketboxAssetSet.IsPortraitPath(assetPath)) return CharacterTextureKind.Portrait;
             string stem = (Path.GetFileNameWithoutExtension(assetPath) ?? string.Empty).ToLowerInvariant();
+            if (IsGeneratedCharacterTexture(assetPath) && stem.EndsWith(CharacterMaterialBuilder.PortraitSuffix, StringComparison.Ordinal))
+                return CharacterTextureKind.Portrait; // generated head-and-shoulders crop
             if (stem.EndsWith(MaskSuffix, StringComparison.Ordinal)) return CharacterTextureKind.Mask;
             if (stem.EndsWith(BaseColorSuffix, StringComparison.Ordinal)) return CharacterTextureKind.ColorWithAlpha;
             if (stem.Contains("_normal")) return CharacterTextureKind.Normal;
