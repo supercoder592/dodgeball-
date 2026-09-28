@@ -71,7 +71,11 @@ namespace DodgeballUltra.Editor.Pipeline
         /// </summary>
         void ConfigureProject();
 
-        /// <summary>Creates (or overwrites) a character material asset at <paramref name="assetPath"/>.</summary>
+        /// <summary>
+        /// Creates (or overwrites) a character material asset at <paramref name="assetPath"/>. <paramref name="maskMap"/>
+        /// uses the HDRP layout (R metallic, G occlusion, B detail, A smoothness) in <b>absolute</b> units: the character
+        /// pipeline has already remapped smoothness into the per-surface range, so implementations must not remap it again.
+        /// </summary>
         Material CreateCharacterMaterial(string assetPath, CharacterMaterialKind kind, Texture2D baseColor, Texture2D normalMap,
             Texture2D maskMap, Texture2D opacityMap);
 

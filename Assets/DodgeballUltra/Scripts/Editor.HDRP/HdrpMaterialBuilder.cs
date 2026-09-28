@@ -18,8 +18,9 @@ namespace DodgeballUltra.Editor.HDRP
     /// double-sided with flipped back-face normals and geometric specular AA against shimmering.</item>
     /// <item><b>Generic</b>: standard Lit.</item>
     /// </list>
-    /// Smoothness comes from the packed mask map (HDRP layout, smoothness in A) remapped to physically plausible ranges
-    /// per surface; metallic is forced to 0 for skin/fabric/hair (dielectrics).
+    /// Smoothness comes from the packed mask map (HDRP layout, smoothness in A), which the character pipeline has already
+    /// remapped into a physically plausible per-surface range (so it is used as is); without a mask map the per-surface
+    /// constant applies. Metallic is forced to 0 for skin/fabric/hair (dielectrics).
     /// </summary>
     public static class HdrpMaterialBuilder
     {
@@ -56,7 +57,6 @@ namespace DodgeballUltra.Editor.HDRP
         /// <summary>Per-kind surface description.</summary>
         private struct CharacterSurface
         {
-            public Vector2 SmoothnessRemap;  // applied to mask.a
             public float Smoothness;         // used without a mask map
             public float SubsurfaceMask;     // 0 = standard Lit
             public bool AlphaClip;
@@ -70,17 +70,17 @@ namespace DodgeballUltra.Editor.HDRP
             {
                 case CharacterMaterialKind.Skin:
                     // Human skin: oily T-zone ~0.6, dry cheeks ~0.3.
-                    return new CharacterSurface { SmoothnessRemap = new Vector2(0.28f, 0.62f), Smoothness = 0.45f, SubsurfaceMask = 1f };
+                    return new CharacterSurface { Smoothness = 0.45f, SubsurfaceMask = 1f };
                 case CharacterMaterialKind.Body:
                     // Cotton/polyester sportswear 0.05-0.45, exposed skin up to ~0.5.
-                    return new CharacterSurface { SmoothnessRemap = new Vector2(0.05f, 0.5f), Smoothness = 0.3f, SubsurfaceMask = Mathf.Clamp01(BodySubsurfaceMask) };
+                    return new CharacterSurface { Smoothness = 0.3f, SubsurfaceMask = Mathf.Clamp01(BodySubsurfaceMask) };
                 case CharacterMaterialKind.Hair:
                     return new CharacterSurface
                     {
-                        SmoothnessRemap = new Vector2(0.25f, 0.6f), Smoothness = 0.45f, AlphaClip = true, DoubleSided = true, SpecularAA = true,
+                        Smoothness = 0.45f, AlphaClip = true, DoubleSided = true, SpecularAA = true,
                     };
                 default:
-                    return new CharacterSurface { SmoothnessRemap = new Vector2(0f, 0.75f), Smoothness = 0.4f };
+                    return new CharacterSurface { Smoothness = 0.4f };
             }
         }
 
@@ -119,8 +119,9 @@ namespace DodgeballUltra.Editor.HDRP
             if (maskMap != null)
             {
                 material.SetTexture(MaskMap, maskMap);
-                material.SetFloat(SmoothnessRemapMin, surface.SmoothnessRemap.x);
-                material.SetFloat(SmoothnessRemapMax, surface.SmoothnessRemap.y);
+                // Mask alpha is absolute smoothness (see IEditorRenderingHooks.CreateCharacterMaterial): identity remap.
+                material.SetFloat(SmoothnessRemapMin, 0f);
+                material.SetFloat(SmoothnessRemapMax, 1f);
                 material.SetFloat(AORemapMin, 0f);
                 material.SetFloat(AORemapMax, 1f);
             }
