@@ -171,6 +171,27 @@ export function rightHandOf(player, out) {
   return out.addScaledVector(_hf, 0.42).addScaledVector(_hr, 0.2);
 }
 
+const _zoneOut = { team: TEAM.NONE, zone: 'infield' };
+/**
+ * Zone owning floor point `pos` on the painted lines (court.zoneAt: an infield half or a team's U outfield), or null
+ * (run-off / bleachers / unreachable). Returns a SHARED object: read it immediately. Allocation-free.
+ */
+export function zoneOwner(pos) {
+  const c = game.court;
+  if (!c || !pos || typeof c.zoneAt !== 'function') return null;
+  return c.zoneAt(pos, _zoneOut);
+}
+/** Does the ball at `pos` rest in `team`'s own zones (its infield half or its U outfield)? */
+export function inTeamZone(pos, team) {
+  const z = zoneOwner(pos);
+  return !!z && z.team === team;
+}
+/** Does the ball at `pos` rest in `team`'s INFIELD half? */
+export function inTeamInfield(pos, team) {
+  const z = zoneOwner(pos);
+  return !!z && z.team === team && z.zone === 'infield';
+}
+
 export function isAlive(p) { return !!p && (!p.health || p.health.isAlive !== false) && !(p.health && p.health.isEliminated); }
 export function isInfield(p) { return !!p && p.zone === 'infield'; }
 export function isGrounded(p) {

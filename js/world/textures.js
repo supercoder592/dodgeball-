@@ -373,13 +373,12 @@ export function createHardwoodTextures({ size = 2048, tileMeters = 4, seed = 202
 export const COURT_PAINT = Object.freeze({
   lineWidth: 0.05,           // 5 cm lines
   lineColor: 'rgba(246,246,240,0.96)',
-  homeZoneAlpha: 0.7,        // outfield strips painted in the (muted) colour of the team that stands there
+  homeZoneAlpha: 0.7,        // U outfields painted in the (muted) colour of the team that stands there
   awayZoneAlpha: 0.9,        // blue over maple mixes toward grey, so it is painted more opaquely
   homeZone: 0xc4521f,        // painted zone colours (muted versions of TEAM_COLORS, read well on maple)
   awayZone: 0x2356a3,
   circleRadius: 1.8,
   circleStain: 'rgba(16,22,36,0.72)',
-  sidelineWordmarkAlpha: 0.55,
   edgeBand: 0.035,           // dark threshold strip where the hardwood meets the vinyl
 });
 
@@ -404,12 +403,14 @@ export function createCourtPaintTexture({ halfX, halfZ, ppm = 80, court, anisotr
   };
   const P = COURT_PAINT, lw = P.lineWidth, hw = lw / 2;
   const hW = court.halfW, hL = court.halfL, D = court.outfieldDepth;
+  const oW = court.outerHalfW != null ? court.outerHalfW : hW + (court.sideOutfieldWidth || 0);
+  const oL = court.outerHalfL != null ? court.outerHalfL : hL + D;
   const home = TEAM_COLORS[TEAM.HOME], away = TEAM_COLORS[TEAM.AWAY];
 
-  // Outfield strips (Home's outfield is behind the Away baseline, +Z).
-  const hb = court.outfieldBounds(TEAM.HOME), ab = court.outfieldBounds(TEAM.AWAY);
-  rect(hb.minX, hb.minZ, hb.maxX, hb.maxZ, rgba(P.homeZone, P.homeZoneAlpha));
-  rect(ab.minX, ab.minZ, ab.maxX, ab.maxZ, rgba(P.awayZone, P.awayZoneAlpha));
+  // U outfields in the colour of the team standing there: Home's U surrounds the Away half (+Z), Away's the Home
+  // half (-Z). Each U = left arm + right arm + back strip (corners included), painted as one zone.
+  for (const r of court.outfieldRects(TEAM.HOME)) rect(r.minX, r.minZ, r.maxX, r.maxZ, rgba(P.homeZone, P.homeZoneAlpha));
+  for (const r of court.outfieldRects(TEAM.AWAY)) rect(r.minX, r.minZ, r.maxX, r.maxZ, rgba(P.awayZone, P.awayZoneAlpha));
 
   // Centre circle stain + team halves accent ring.
   const cxp = X(0), czp = Z(0), R = P.circleRadius * ppm;
@@ -422,18 +423,24 @@ export function createCourtPaintTexture({ halfX, halfZ, ppm = 80, court, anisotr
   ctx.beginPath(); ctx.arc(cxp, czp, R - 0.2 * ppm, 0, Math.PI); ctx.stroke();
   drawWordmark(ctx, cxp, czp, R * 1.5, { stacked: true, alpha: 0.95 });
 
-  // Lines: sidelines, baselines (extended across the outfield width), centre line, outfield borders, circle.
+  // Lines: court sidelines + baselines, centre line across the full width (it splits the two teams' arms), outer
+  // boundary of the outfield ring. No line between an arm and its back strip (one zone).
   const L = P.lineColor;
-  rect(-hW - hw, -hL, -hW + hw, hL, L);
-  rect(hW - hw, -hL, hW + hw, hL, L);
-  rect(hb.minX, -hL - hw, hb.maxX, -hL + hw, L);
-  rect(hb.minX, hL - hw, hb.maxX, hL + hw, L);
-  rect(-hW, -hw, hW, hw, L);
-  for (const b of [hb, ab]) {
-    const zFar = b.minZ < 0 ? b.minZ : b.maxZ;
-    rect(b.minX, zFar - hw, b.maxX, zFar + hw, L);
-    rect(b.minX - hw, b.minZ, b.minX + hw, b.maxZ, L);
-    rect(b.maxX - hw, b.minZ, b.maxX + hw, b.maxZ, L);
+  rect(-hW - hw, -hL - hw, -hW + hw, hL + hw, L);
+  rect(hW - hw, -hL - hw, hW + hw, hL + hw, L);
+  rect(-hW, -hL - hw, hW, -hL + hw, L);
+  rect(-hW, hL - hw, hW, hL + hw, L);
+  rect(-oW, -hw, oW, hw, L);
+  rect(-oW - hw, -oL - hw, -oW + hw, oL + hw, L);
+  rect(oW - hw, -oL - hw, oW + hw, oL + hw, L);
+  rect(-oW, -oL - hw, oW, -oL + hw, L);
+  rect(-oW, oL - hw, oW, oL + hw, L);
+  // Serve marks: a small ring where each team's server stands.
+  ctx.strokeStyle = L;
+  ctx.lineWidth = 0.04 * ppm;
+  for (const t of [TEAM.HOME, TEAM.AWAY]) {
+    const sp = court.servePoint(t);
+    ctx.beginPath(); ctx.arc(X(sp.x), Z(sp.z), 0.35 * ppm, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.strokeStyle = L;
   ctx.lineWidth = lw * ppm;
@@ -445,28 +452,25 @@ export function createCourtPaintTexture({ halfX, halfZ, ppm = 80, court, anisotr
     rect(hW, z - hw, hW + 0.35, z + hw, L);
   }
 
-  // Team words in the outfield strips, each readable from its own team's half.
-  const teamWord = (word, zc, flip, col) => {
+  // Team words: large on each back strip (readable from the owning team's own half), small mid-arm (reading from
+  // the court). rot: 0 reads for a viewer at -Z, PI for +Z, -PI/2 for a viewer looking +X, +PI/2 looking -X.
+  const teamWord = (word, xc, zc, rot, size, alpha) => {
     ctx.save();
-    ctx.translate(X(0), Z(zc));
-    if (flip) ctx.rotate(Math.PI);
-    ctx.font = `italic 900 ${1.05 * ppm}px ${SPORT_FONT}`;
+    ctx.translate(X(xc), Z(zc));
+    if (rot) ctx.rotate(rot);
+    ctx.font = `italic 900 ${size * ppm}px ${SPORT_FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = rgba(col, 0.55);
+    ctx.fillStyle = rgba(0xf4f4f0, alpha);
     ctx.fillText(word, 0, 0);
     ctx.restore();
   };
-  teamWord('HOME', (hb.minZ + hb.maxZ) / 2, false, 0xf4f4f0);
-  teamWord('AWAY', (ab.minZ + ab.maxZ) / 2, true, 0xf4f4f0);
-
-  // Sideline wordmarks between the court and the hardwood edge (read from each sideline).
-  const sideX = (hW + halfX) / 2 + 0.25;
+  const backZ = hL + D / 2, armX = hW + (oW - hW) / 2, armZ = hL / 2;
+  teamWord('HOME', 0, backZ, 0, 1.05, 0.55);          // Home's back strip (+Z), read from the Home half
+  teamWord('AWAY', 0, -backZ, Math.PI, 1.05, 0.55);   // Away's back strip (-Z), read from the Away half
   for (const sgn of [-1, 1]) {
-    ctx.save();
-    ctx.translate(X(sgn * sideX), Z(0));
-    ctx.rotate(sgn > 0 ? -Math.PI / 2 : Math.PI / 2);
-    drawWordmark(ctx, 0, 0, 9.5 * ppm, { alpha: P.sidelineWordmarkAlpha });
-    ctx.restore();
+    const rot = sgn > 0 ? -Math.PI / 2 : Math.PI / 2;
+    teamWord('HOME', sgn * armX, armZ, rot, 0.7, 0.5);
+    teamWord('AWAY', sgn * armX, -armZ, rot, 0.7, 0.5);
   }
 
   // Dark threshold band at the hardwood edge.
@@ -525,9 +529,9 @@ export function createPaddingTextures({ pxPerMeter = 256, panelMeters = 2, panel
   drawWordmark(x, pw * 0.5, Hh * 0.55, pw * 0.8, { alpha: 0.95 });
   x.save();
   x.textAlign = 'center'; x.textBaseline = 'middle';
-  fitFont(x, '3v3 SUPER LEAGUE', pw * 0.8, Hh * 0.2);
+  fitFont(x, '4v4 SUPER LEAGUE', pw * 0.8, Hh * 0.2);
   x.fillStyle = 'rgba(240,240,236,0.85)';
-  x.fillText('3v3 SUPER LEAGUE', pw * 1.5, Hh * 0.56);
+  x.fillText('4v4 SUPER LEAGUE', pw * 1.5, Hh * 0.56);
   fitFont(x, '#DODGEBALLULTRA', pw * 0.8, Hh * 0.2);
   x.fillStyle = rgba(home, 0.95);
   x.fillText('#DODGEBALLULTRA', pw * 2.5, Hh * 0.56);
@@ -681,7 +685,7 @@ export function createBannerAtlas({ heroes, anisotropy = 8 }) {
       x.font = `italic 900 ${rh * 0.46}px ${SPORT_FONT}`;
       x.textAlign = 'center'; x.textBaseline = 'middle';
       x.fillStyle = hex(k === 1 ? away : home);
-      x.fillText(k === 1 ? '3v3 SUPER LEAGUE' : 'RALLY BOOST 220 KM/H', cx0 + W / 8, ry + rh / 2);
+      x.fillText(k === 1 ? '4v4 SUPER LEAGUE' : 'RALLY BOOST 220 KM/H', cx0 + W / 8, ry + rh / 2);
       x.restore();
     }
   }
@@ -701,7 +705,7 @@ export function createBannerAtlas({ heroes, anisotropy = 8 }) {
   x.save();
   x.font = `700 ${wh * 0.09}px ${SPORT_FONT}`;
   x.textAlign = 'center'; x.fillStyle = 'rgba(230,230,225,0.75)';
-  x.fillText('WORLD 3v3 SUPERPOWERED DODGEBALL CHAMPIONSHIP', W / 2, wy + wh * 0.84);
+  x.fillText('WORLD 4v4 SUPERPOWERED DODGEBALL CHAMPIONSHIP', W / 2, wy + wh * 0.84);
   x.restore();
   rects.wall = uv(0, wy, W, wh);
 

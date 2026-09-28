@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Avatar Viewer</title>
+<link rel="icon" href="data:," />
 <style>
   :root { --bg: #0d0f12; --fg: #e8e8e8; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; overflow: hidden; }
@@ -20,6 +21,7 @@
 // Developer tool: previews every hero's realistic Rocketbox model with every motion-capture clip.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const params = new URLSearchParams(location.search);
@@ -42,7 +44,7 @@ const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 64), new THREE.MeshStan
 floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
 
 const manifest = await (await fetch('../assets/manifest.json')).json();
-const loader = new GLTFLoader();
+const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder); // GLBs are EXT_meshopt_compression (gltf_post.mjs)
 const texLoader = new THREE.TextureLoader();
 const heroSel = document.getElementById('hero'), clipSel = document.getElementById('clip');
 for (const h of Object.keys(manifest.heroes)) heroSel.add(new Option(h, h));

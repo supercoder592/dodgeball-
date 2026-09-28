@@ -7,6 +7,7 @@
 //   lead              iterative intercept of a target moving at constant planar velocity
 //   trajectory        closed-form positions and first time within a radius of a point
 //   knockback         body shove (m/s) scaled by ball speed
+//   passes            fixed-angle lob solution (solveAtAngle), aim-cone receiver pick, segment length inside a half
 // Vectors are any {x, y, z}; results are written into caller-provided plain objects (allocation-free).
 // ---------------------------------------------------------------------------------------------------------------
 import { RallyMath, Ballistics } from '../core/rules.js';
@@ -170,4 +171,68 @@ export function planarAngle(ax, az, bx, bz) {
 export function signedPlanarAngle(ax, az, bx, bz) {
   // With yaw 0 facing +Z and "right" = -X, turning right means rotating +Z toward -X.
   return Math.atan2(ax * bz - az * bx, ax * bx + az * bz);
+}
+
+/**
+ * Launch velocity from `o` through point `t` at a fixed elevation `angle` (radians) under gravity `g`: the lob of a
+ * pass over the opponents' heads. speed = sqrt(g d^2 / (2 cos^2 a (d tan a - dy))).
+ * out = { x, y, z (velocity), time (s to reach t), speed, ok }. ok = false (velocity zeroed) when the angle cannot
+ * reach the point (target above the line of fire) or the distance is ~0.
+ */
+export function solveAtAngle(o, t, angle, g, out) {
+  const dx = t.x - o.x, dy = t.y - o.y, dz = t.z - o.z;
+  const d = Math.hypot(dx, dz);
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const den = 2 * c * c * (d * Math.tan(angle) - dy);
+  if (d < 1e-4 || !(den > 1e-9) || !(g > 0) || c < 1e-4) {
+    out.x = 0; out.y = 0; out.z = 0; out.time = Infinity; out.speed = 0; out.ok = false;
+    return out;
+  }
+  const speed = Math.sqrt(g * d * d / den);
+  out.x = (dx / d) * c * speed;
+  out.z = (dz / d) * c * speed;
+  out.y = s * speed;
+  out.time = d / (c * speed);
+  out.speed = speed;
+  out.ok = true;
+  return out;
+}
+
+/**
+ * Pass receiver picked by aim: among `cands` ({x, z}) the one whose direction from (ox, oz) has the best cosine to the
+ * aim direction (aimX, aimZ), minus 0.01 per metre, within the cone cos >= minCos; none in the cone -> the nearest.
+ * @returns {number} index, -1 for an empty list
+ */
+export function pickPassIndex(ox, oz, aimX, aimZ, cands, minCos = 0.5) {
+  const al = Math.hypot(aimX, aimZ);
+  let best = -1, bestScore = -Infinity, nearest = -1, nearestD = Infinity;
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
+    if (!c) continue;
+    const dx = c.x - ox, dz = c.z - oz, d = Math.hypot(dx, dz);
+    if (d < nearestD) { nearestD = d; nearest = i; }
+    if (al < 1e-6 || d < 1e-6) continue;
+    const cos = (dx * aimX + dz * aimZ) / (d * al);
+    if (cos < minCos) continue;
+    const score = cos - 0.01 * d;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best >= 0 ? best : nearest;
+}
+
+const _lbP = [0, 0, 0, 0], _lbQ = [0, 0, 0, 0];
+
+/** Length of the planar segment (ax, az) -> (bx, bz) inside the box r {minX, maxX, minZ, maxZ} (Liang-Barsky). */
+export function segmentLengthInRect(ax, az, bx, bz, r) {
+  const dx = bx - ax, dz = bz - az;
+  let t0 = 0, t1 = 1;
+  const p = _lbP, q = _lbQ;
+  p[0] = -dx; p[1] = dx; p[2] = -dz; p[3] = dz;
+  q[0] = ax - r.minX; q[1] = r.maxX - ax; q[2] = az - r.minZ; q[3] = r.maxZ - az;
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-12) { if (q[i] < 0) return 0; continue; }
+    const t = q[i] / p[i];
+    if (p[i] < 0) { if (t > t1) return 0; if (t > t0) t0 = t; } else { if (t < t0) return 0; if (t < t1) t1 = t; }
+  }
+  return t1 > t0 ? (t1 - t0) * Math.hypot(dx, dz) : 0;
 }

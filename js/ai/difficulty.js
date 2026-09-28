@@ -5,7 +5,10 @@
 // and presses the SAME buttons a human presses (the intent goes through the normal PlayerStateMachine). Spec anchors:
 //   reaction time 0.45 s (easy) -> 0.12 s (pro); catch-press timing sigma 0.12 s -> 0.03 s around ~0.08 s before
 //   impact (inside the 0.15 s Perfect Catch window); aim error, catch attempt probability, dodge skill, ability usage
-//   and decision interval (+ jitter) scale with the tier.
+//   and decision interval (+ jitter) scale with the tier. Single-ball 4v4 knobs (pass / intercept chance, possession
+//   safety margin, outfield flanking skill, serve hold) scale the same way; catch attempts are +0.08 on easy / normal because a catch is a possession swing
+//   while a dodge hands the ball to the enemy outfield behind you. Hard / pro sit only a little above normal: their catches
+//   are almost always Perfect (a revive each), and more of them made single-ball rounds run to the time limit.
 // Ported from the Unity BotDifficultyProfile / BotHeroTraits (Assets/DodgeballUltra/Scripts/Runtime/AI).
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -38,7 +41,13 @@ export const DIFFICULTY_IDS = Object.freeze(['easy', 'normal', 'hard', 'pro']);
  * @property {number} throwHesitationMax
  * @property {number} opportunismSkill      chance to release early when the target commits (jump / charge / stun)
  * @property {number} targetSelectionSkill  chance to pick the best-scored target (else a score-weighted random one)
- * @property {number} passChance            chance per possession to consider a pass
+ * @property {number} passChance            chance per possession to consider a pass (single ball: passing to the
+ *                                          outfield for crossfire is central)
+ * @property {number} interceptChance       chance to go for (catch) an enemy pass flying past within reach
+ * @property {number} possessionSafety      seconds before the possession limit by which the ball must be released
+ * @property {number} flankSkill            0..1 chance an outfielder takes the best flanking spot (else one of the top 3)
+ * @property {number} serveHoldMin          seconds the server holds the ball after the whistle before playing it
+ * @property {number} serveHoldMax
  * @property {number} strafeAmplitude       lateral strafe amplitude (m) while attacking
  * @property {number} catchAttemptProbability base chance to catch instead of dodging
  * @property {number} idealCatchLead        ideal seconds before impact to press Catch
@@ -60,8 +69,9 @@ const NORMAL = {
   dangerSenseReactionMul: 0.45, cloakDetectionRadius: 2.5, obscuredMistargetChance: 0.5,
   decisionInterval: 0.32, decisionJitter: 0.30, hysteresis: 0.15, minBehaviourDwell: 0.35, aggression: 0.5,
   aimErrorDeg: 4.0, leadAccuracy: 0.8, chargeTimeMin: 0.2, chargeTimeMax: 1.2, throwHesitationMin: 0.35, throwHesitationMax: 0.8,
-  opportunismSkill: 0.35, targetSelectionSkill: 0.65, passChance: 0.25, strafeAmplitude: 0.9,
-  catchAttemptProbability: 0.5, idealCatchLead: 0.08, catchTimingSigma: 0.08,
+  opportunismSkill: 0.35, targetSelectionSkill: 0.65, passChance: 0.40, strafeAmplitude: 0.9,
+  interceptChance: 0.30, possessionSafety: 1.6, flankSkill: 0.60, serveHoldMin: 0.6, serveHoldMax: 1.4,
+  catchAttemptProbability: 0.58, idealCatchLead: 0.08, catchTimingSigma: 0.08,
   dodgeSkill: 0.55, maneuverTimingSigma: 0.06,
   abilityUsageFactor: 0.8, abilityUtilityThreshold: 0.45, abilityRetryInterval: 1.8, abilityFailBackoff: 4,
   preferredDepth: 5.0, holderAvoidDistance: 8, teammateSpacing: 3.0,
@@ -75,8 +85,9 @@ export const BOT_DIFFICULTY = Object.freeze({
     dangerSenseReactionMul: 0.5, cloakDetectionRadius: 1.5, obscuredMistargetChance: 0.65,
     decisionInterval: 0.45, decisionJitter: 0.35, hysteresis: 0.2, minBehaviourDwell: 0.5, aggression: 0.35,
     aimErrorDeg: 6.5, leadAccuracy: 0.55, throwHesitationMin: 0.6, throwHesitationMax: 1.3, opportunismSkill: 0.1,
-    targetSelectionSkill: 0.4, passChance: 0.1, strafeAmplitude: 0.5,
-    catchAttemptProbability: 0.3, catchTimingSigma: 0.12, dodgeSkill: 0.35, maneuverTimingSigma: 0.1,
+    targetSelectionSkill: 0.4, passChance: 0.15, strafeAmplitude: 0.5,
+    interceptChance: 0.10, possessionSafety: 2.0, flankSkill: 0.35, serveHoldMin: 1.0, serveHoldMax: 2.0,
+    catchAttemptProbability: 0.38, catchTimingSigma: 0.12, dodgeSkill: 0.35, maneuverTimingSigma: 0.1,
     abilityUsageFactor: 0.55, abilityRetryInterval: 2.5, abilityFailBackoff: 5,
     preferredDepth: 5.5, holderAvoidDistance: 7, teammateSpacing: 2.5,
   }),
@@ -87,8 +98,9 @@ export const BOT_DIFFICULTY = Object.freeze({
     dangerSenseReactionMul: 0.4, cloakDetectionRadius: 3.5, obscuredMistargetChance: 0.4,
     decisionInterval: 0.22, decisionJitter: 0.25, hysteresis: 0.12, minBehaviourDwell: 0.3, aggression: 0.65,
     aimErrorDeg: 2.2, leadAccuracy: 0.93, throwHesitationMin: 0.2, throwHesitationMax: 0.5, opportunismSkill: 0.6,
-    targetSelectionSkill: 0.85, passChance: 0.35, strafeAmplitude: 1.3,
-    catchAttemptProbability: 0.68, catchTimingSigma: 0.05, dodgeSkill: 0.75, maneuverTimingSigma: 0.045,
+    targetSelectionSkill: 0.85, passChance: 0.50, strafeAmplitude: 1.3,
+    interceptChance: 0.50, possessionSafety: 1.3, flankSkill: 0.85, serveHoldMin: 0.4, serveHoldMax: 0.9,
+    catchAttemptProbability: 0.6, catchTimingSigma: 0.07, dodgeSkill: 0.75, maneuverTimingSigma: 0.045,
     abilityUsageFactor: 1.0, abilityRetryInterval: 1.2, abilityFailBackoff: 3.5,
     preferredDepth: 4.5, holderAvoidDistance: 9, teammateSpacing: 3.2,
   }),
@@ -98,8 +110,9 @@ export const BOT_DIFFICULTY = Object.freeze({
     dangerSenseReactionMul: 0.35, cloakDetectionRadius: 4.5, obscuredMistargetChance: 0.3,
     decisionInterval: 0.15, decisionJitter: 0.2, hysteresis: 0.1, minBehaviourDwell: 0.25, aggression: 0.75,
     aimErrorDeg: 1.0, leadAccuracy: 1.0, throwHesitationMin: 0.1, throwHesitationMax: 0.3, opportunismSkill: 0.85,
-    targetSelectionSkill: 0.95, passChance: 0.45, strafeAmplitude: 1.6,
-    catchAttemptProbability: 0.85, catchTimingSigma: 0.03, dodgeSkill: 0.92, maneuverTimingSigma: 0.03,
+    targetSelectionSkill: 0.95, passChance: 0.55, strafeAmplitude: 1.6,
+    interceptChance: 0.65, possessionSafety: 1.1, flankSkill: 1.0, serveHoldMin: 0.3, serveHoldMax: 0.7,
+    catchAttemptProbability: 0.72, catchTimingSigma: 0.03, dodgeSkill: 0.92, maneuverTimingSigma: 0.03,
     abilityUsageFactor: 1.15, abilityRetryInterval: 0.8, abilityFailBackoff: 3,
     preferredDepth: 4.2, holderAvoidDistance: 9.5, teammateSpacing: 3.4,
   }),

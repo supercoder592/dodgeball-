@@ -8,8 +8,12 @@
 //   catch      pressing catch arms the hands for catchWindow (0.4 s); a ball reaching the hands / body in the frontal
 //              cone is classified by CatchTiming (perfect <= 0.15 s x perfectWindowMul before impact, else normal);
 //              nothing arrives -> whiff (EV.CatchWhiff) and whiffRecovery (0.5 s) before the next attempt
-//   perfect    revive the longest-waiting outfield teammate (Match), +0.15 ult, +20% on the counter throw
-//   pass       passHandler first (Houdini's Hat Trick), else a lob to the nearest teammate who can receive it
+//   perfect    revive the longest-waiting ELIMINATED outfield teammate (Match), +0.15 ult, +20% on the counter throw
+//   pass       receiver: explicit `to` > intent.passTarget (bots) > the teammate nearest the aim direction (humans,
+//              aim cone) > the nearest teammate who can receive; passHandler first (Houdini's Hat Trick), else a
+//              flat pass, or a 34-degree LOB when the path crosses the opponents' half (infield <-> outfield)
+//   intercept  an ENEMY catching a pass only takes possession: rally 0, no revive / ult / counter boost; BallCaught
+//              reports quality 'normal' with intercepted:true (timingQuality keeps the real classification)
 // The PlayerStateMachine (gameplay/states.js) drives beginCharge / releaseThrow / tryStartCatch from the intent;
 // Combat only reads intents for that when no state machine exists. Pass / pickup / target cycling are read here
 // (idempotent - harmless if the Player already handled them this frame).
@@ -19,10 +23,10 @@ import * as THREE from 'three';
 import { game } from '../game.js';
 import { EV } from '../core/events.js';
 import { CatchTiming, CatchQuality, RallyMath } from '../core/rules.js';
-import { KMH_TO_MS, MS_TO_KMH, PERFECT_CATCH_ULT_GAIN, PERFECT_CATCH_COUNTER_BOOST, GRAVITY } from '../core/constants.js';
+import { KMH_TO_MS, MS_TO_KMH, PERFECT_CATCH_ULT_GAIN, PERFECT_CATCH_COUNTER_BOOST, GRAVITY, opponent } from '../core/constants.js';
 import { BASE_COMBAT } from '../abilities/roster.js';
 import { ThrowSolver, Targeting, finalSpeed, chestOf, bodyRadiusOf, isTargetable, isHiddenFromAim, matchGrantsUlt } from './throwSolver.js';
-import { chargeCurve, chargeSpeedMul, chargeSecondsFor, planarAngle } from './throwMath.js';
+import { chargeCurve, chargeSpeedMul, chargeSecondsFor, planarAngle, pickPassIndex, segmentLengthInRect } from './throwMath.js';
 
 const DEG = Math.PI / 180;
 
@@ -39,6 +43,9 @@ export const COMBAT_TUNING = Object.freeze({
   passGravityScale: 1,
   passMaxSpeed: 24,                     // m/s
   passArcFactor: 1.18,                  // pass speed >= this x the 45-degree minimum for the distance
+  passLobAngleDeg: 34,                  // elevation of a pass whose path crosses the opponents' half (lob)
+  passLobMinCross: 1,                   // m of the path over the opponents' half that makes a pass a lob
+  passAimMinCos: 0.5,                   // human passes: receivers within 60 degrees of the aim are preferred
   targetStickiness: 1.6,                // keep the current lock inside this x the assist cone
   manualLockTime: 2.5,                  // s a cycled target is kept against the automatic assist
   targetRefreshInterval: 0.08,          // s between aim-assist re-evaluations
@@ -53,6 +60,11 @@ const _b = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _aim = new THREE.Vector3();
 const _solveOut = { velocity: new THREE.Vector3(), aimPoint: new THREE.Vector3(), flightTime: 0, ok: false };
+// Pass receiver candidates (reused; at most a handful of teammates).
+const _passPlayers = [];
+const _passXZ = [];
+const _passPool = [];
+const _half = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
 
 export class Combat {
   /**
@@ -143,7 +155,7 @@ export class Combat {
     let best = null, bestD = radius * radius;
     for (let i = 0; i < list.length; i++) {
       const b = list[i];
-      if (b.state !== 'free') continue;
+      if (b.state !== 'free' && b.state !== 'stasis') continue;
       const dy = b.position.y - pos.y;
       if (dy < -0.3 || dy > maxH) continue;
       const dx = b.position.x - pos.x, dz = b.position.z - pos.z;
@@ -423,8 +435,11 @@ export class Combat {
 
     // --- success
     const thrower = ball.lastThrower || null;
+    const isPass = !!ball.isPass;
+    // Catching an enemy PASS is an interception: possession only (no rally, revive, ult or counter boost).
+    const intercepted = isPass && !!thrower && game.areEnemies(thrower, p);
     const speedKmh = ball.velocity.length() * MS_TO_KMH;
-    const rally = RallyMath.next(ball.rallyCount | 0);
+    const rally = intercepted ? 0 : RallyMath.next(ball.rallyCount | 0);
     const payload = ball.payload;
     const at = pos.clone();
     this.catchArmed = false;
@@ -437,7 +452,10 @@ export class Combat {
     if (this.heldBall !== ball) this._acceptBall(ball);
     ball.setRallyCount(rally);
 
-    if (quality === CatchQuality.PERFECT) {
+    const reported = intercepted ? CatchQuality.NORMAL : quality;
+    if (intercepted) {
+      // possession only
+    } else if (quality === CatchQuality.PERFECT) {
       game.match?.reviveOneOutfield?.(p.team, 'perfectCatch', p);
       p.abilities?.addUltimateCharge?.(COMBAT_TUNING.perfectCatchUltGain, 'perfectCatch');
       this.grantCounterBoost();
@@ -446,19 +464,69 @@ export class Combat {
     }
     p.avatar?.playCatch?.();
     game.events.emit(EV.BallCaught, {
-      ball, catcher: p, thrower, quality, secondsBeforeImpact, point: at, speedKmh, rallyCount: rally,
-      local: !!(p.isLocal || (thrower && thrower.isLocal)),
+      ball, catcher: p, thrower, quality: reported, timingQuality: quality, secondsBeforeImpact, point: at, speedKmh,
+      rallyCount: rally, local: !!(p.isLocal || (thrower && thrower.isLocal)), intercepted, isPass,
     });
-    return quality;
+    return reported;
   }
 
   // ================================================================== passing
-  /** Pass to the nearest teammate who can receive (passHandler first). @returns {boolean} */
-  tryPass() {
+  /**
+   * Who a pass would go to right now: `to` when it is a teammate able to receive, else intent.passTarget (bots),
+   * else - for humans - the teammate best aligned with the aim (pickPassIndex), else the nearest able teammate.
+   * @param {object|null} [to]
+   * @returns {object|null} Player
+   */
+  _pickPassReceiver(to = null) {
+    const p = this.player;
+    if (this._canPassTo(to)) return to;
+    const it = p.intent;
+    if (it && this._canPassTo(it.passTarget)) return it.passTarget;
+    if (!p.isHuman) return game.nearestTeammate(p, p.position);
+    const list = game.players;
+    _passPlayers.length = 0;
+    _passXZ.length = 0;
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (!this._canPassTo(r)) continue;
+      const n = _passPlayers.length;
+      let c = _passPool[n];
+      if (!c) c = _passPool[n] = { x: 0, z: 0 };
+      c.x = r.position.x; c.z = r.position.z;
+      _passPlayers.push(r);
+      _passXZ.push(c);
+    }
+    let aimX = Math.sin(p.yaw || 0), aimZ = Math.cos(p.yaw || 0);
+    if (it && it.aimDir && it.aimDir.lengthSq() > 1e-8) { aimX = it.aimDir.x; aimZ = it.aimDir.z; }
+    const i = pickPassIndex(p.position.x, p.position.z, aimX, aimZ, _passXZ, COMBAT_TUNING.passAimMinCos);
+    const r = i >= 0 ? _passPlayers[i] : null;
+    _passPlayers.length = 0;
+    return r;
+  }
+
+  /** A teammate (not us) who can receive a pass. */
+  _canPassTo(r) {
+    const p = this.player;
+    return !!r && r !== p && game.areTeammates(p, r) && r.canReceive !== false;
+  }
+
+  /** The teammate a pass would reach right now (HUD pass marker), or null. */
+  previewPassReceiver() {
+    if (!this.heldBall) return null;
+    return this._pickPassReceiver(null);
+  }
+
+  /**
+   * Pass the held ball (passHandler first). Receiver order: explicit `to` > intent.passTarget > aim cone (humans) >
+   * nearest teammate who can receive.
+   * @param {object|null} [to]
+   * @returns {boolean}
+   */
+  tryPass(to = null) {
     const p = this.player;
     const ball = this.heldBall;
     if (!ball || p.canAct === false) return false;
-    const to = game.nearestTeammate(p, p.position);
+    to = this._pickPassReceiver(to);
     if (!to) return false;
     const h = this.passHandler;
     if (h) {
@@ -478,8 +546,18 @@ export class Combat {
     }
     const params = this._buildPassParams(to);
     this.launchBall(ball, params);
-    game.events.emit(EV.BallPassed, { ball, from: p, to, teleported: false });
+    game.events.emit(EV.BallPassed, { ball, from: p, to, teleported: false, lob: Number.isFinite(params.launchAngle) });
     return true;
+  }
+
+  /** Does the straight path from `a` to `b` run over the opponents' half for more than passLobMinCross metres? */
+  _crossesEnemyHalf(a, b) {
+    const court = game.court;
+    if (!court) return false;
+    const s = court.sideSign(opponent(this.player.team));
+    _half.minX = -court.halfW; _half.maxX = court.halfW;
+    _half.minZ = s < 0 ? -court.halfL : 0; _half.maxZ = s < 0 ? 0 : court.halfL;
+    return segmentLengthInRect(a.x, a.z, b.x, b.z, _half) > COMBAT_TUNING.passLobMinCross;
   }
 
   _buildPassParams(to) {
@@ -493,7 +571,7 @@ export class Combat {
     const needed = Math.sqrt(g * Math.max(1, dist)) * COMBAT_TUNING.passArcFactor;
     const speed = Math.min(COMBAT_TUNING.passMaxSpeed, Math.max((prof.passSpeedKmh || 45) * KMH_TO_MS, needed));
     const rally = this.heldBall ? this.heldBall.rallyCount | 0 : 0;
-    return {
+    const params = {
       thrower: p, target: to, origin, aimDir: _b.subVectors(_aim, origin).normalize().clone(), aimPoint: _aim.clone(),
       // The ball keeps its rally count through a pass, but a pass is never rally-boosted: pre-divide the multiplier.
       baseSpeed: speed / RallyMath.multiplier(rally), charge: 0, chargeSeconds: 0, speedMul: 1, radiusMul: 1,
@@ -501,6 +579,12 @@ export class Combat {
       unblockable: false, pierce: false, isAbility: false, isPass: true, isCounter: false, reveals: false,
       style: 'standard', payload: null,
     };
+    // Over the opponents' heads (infield <-> outfield crossfire): a high lob they can only reach near either end.
+    if (this._crossesEnemyHalf(origin, _aim)) {
+      params.launchAngle = COMBAT_TUNING.passLobAngleDeg * DEG;
+      params.maxSpeed = COMBAT_TUNING.passMaxSpeed;
+    }
+    return params;
   }
 
   /**

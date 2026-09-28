@@ -47,8 +47,13 @@ function chestOf(player, out) {
  * Permanent elimination interceptor on Chrono's Health. An elimination caused by a ball hit, an ability or the
  * frozen second hit returns 'delayed' and opens a 2 s window: health.setPending(true), a gold clock effect on the
  * body and an accelerating heartbeat. Further eliminations during the window are absorbed into it.
- *  - A TEAMMATE (not Chrono) catches a ball in the window (EV.BallCaught): cancelled - setPending(false), revive(1),
- *    EV.PlayerRevived { cause: 'delayedImpactCancelled', reviver: catcher }.
+ *  - Cancelled - setPending(false), revive(1), EV.PlayerRevived { cause: 'delayedImpactCancelled', reviver } - when in
+ *    the window a TEAMMATE (not Chrono):
+ *      * catches a ball (EV.BallCaught), or
+ *      * grabs the REBOUND of the ball that hit her before it touches the floor (EV.BallPickedUp of that ball with no
+ *        floor EV.BallBounced in between - the classic "caught deflection saves you" rule; single-ball friendly), or
+ *      * lands a hit on an enemy (EV.BallHitPlayer, outcome damaged / eliminated).
+ *    A plain floor pickup of the rebound does not count (it usually rolls into her own half: far too easy).
  *  - The window expires: health.commitPending(ctx) with the original context (attacker credit, impulse, point).
  *  - The round ends / resets: cleared silently.
  */
@@ -90,6 +95,8 @@ export class ChronoDelayedImpact extends AbilityBase {
     this._health = null;
     this._committing = false;
     this._causes = new Set(this.params.delayCauses);
+    this._rebound = null;      // the ball whose hit started the window (rebound save)
+    this._reboundDead = true;  // it touched the floor since
     this._interceptor = { priority: this.params.priority, intercept: (health, ctx) => this._intercept(health, ctx) };
   }
 
@@ -104,6 +111,9 @@ export class ChronoDelayedImpact extends AbilityBase {
   onEquip() {
     this._ensureRegistered();
     this.listen(EV.BallCaught, (e) => this._onCaught(e));
+    this.listen(EV.BallBounced, (e) => { if (e && e.ball === this._rebound && e.floor) this._reboundDead = true; });
+    this.listen(EV.BallPickedUp, (e) => this._onPickedUp(e));
+    this.listen(EV.BallHitPlayer, (e) => this._onHit(e));
     this.listen(EV.RoundEnded, () => this._clear(true));
     this.listen(EV.MatchEnded, () => this._clear(true));
   }
@@ -159,6 +169,9 @@ export class ChronoDelayedImpact extends AbilityBase {
     this._until = now + Math.max(0.05, p.delay);
     this._nextBeat = now;
     this._ctx = snapshotContext(ctx);
+    const hitBall = ctx && ctx.hit && ctx.hit.ball;
+    this._rebound = hitBall || null;
+    this._reboundDead = !hitBall;
     health?.setPending?.(true);
     this._clock = fx.attach('rewindTrail', o.root, { duration: p.delay, color: CLOCK_TINT });
     if (p.tintAmount > 0) { fx.tint(o, CLOCK_TINT, p.tintAmount); this._tinted = true; }
@@ -173,11 +186,28 @@ export class ChronoDelayedImpact extends AbilityBase {
     this._cancel(e.catcher);
   }
 
+  /** A teammate snatched the rebound off Chrono out of the air (before its first floor contact). */
+  _onPickedUp(e) {
+    if (!this.pending || !e || !e.player || e.ball !== this._rebound || this._reboundDead) return;
+    if (!this.isAlly(e.player)) return;
+    this._cancel(e.player);
+  }
+
+  /** A teammate's ball hit an enemy in the window. */
+  _onHit(e) {
+    if (!this.pending || !e || !e.attacker || !e.victim) return;
+    if (!this.isAlly(e.attacker) || !this.isEnemy(e.victim)) return;
+    if (e.outcome !== 'damaged' && e.outcome !== 'eliminated' && e.outcome !== 'delayed') return;
+    this._cancel(e.attacker);
+  }
+
   _cancel(catcher) {
     const o = this.owner, h = o.health, p = this.params;
     this._stopPresentation();
     this.pending = false;
     this._ctx = null;
+    this._rebound = null;
+    this._reboundDead = true;
     if (!h) return;
     h.setPending(false);
     h.revive(p.restoreHpFraction);
@@ -290,7 +320,8 @@ export class ChronoStasisField extends AbilityBase {
     if (!ball || ball.state !== 'live') ball = this.findTarget(); // re-validate (same frame, defensive)
     if (!ball) { this._refund = true; return; }
     this._releaseBubble();
-    ball.enterStasis(p.duration);
+    // A frozen enemy PASS drops dead when the stasis ends (the lob is intercepted); a real throw resumes its flight.
+    ball.enterStasis(p.duration, ball.isPass ? 'free' : 'live');
     this.frozenBall = ball;
     this._frozenAt = this.now;
     this._bubble = fx.attach('stasisBubble', ball.root, { duration: p.duration, color: CHRONO_TINT });

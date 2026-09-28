@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chargeCurve, chargeSecondsFor, chargeSpeedMul, computeFinalSpeed, solveLaunch, leadTarget, positionAt,
-  firstTimeWithin, knockbackForSpeed, planarAngle, signedPlanarAngle, THROW_MATH,
+  firstTimeWithin, knockbackForSpeed, planarAngle, signedPlanarAngle, THROW_MATH, solveAtAngle, pickPassIndex,
+  segmentLengthInRect,
 } from './throwMath.js';
 import {
   makeSweepHit, sweepSphereCapsuleY, sweepSphereSphere, sweepSphereAABB, sweepSpherePlaneY, bounceVelocity,
@@ -151,4 +152,46 @@ test('bounce keeps restitution along the normal and friction along the surface',
   assert.equal(bounceVelocity(sep, v(0, 1, 0), 0.5, 0.5), 0);
   close(sep.y, 2);
   close(distanceToVerticalSegment(v(1, 5, 0), 0, 0, 0, 2), Math.hypot(1, 3));
+});
+
+// ------------------------------------------------------------------ passes
+test('fixed-angle lob passes through the target (14.5 m at 34 degrees -> 12.4 m/s, apex ~2.45 m)', () => {
+  const o = v(0, 1.4, -4), t = v(0, 1.4, 10.5), a = 34 * Math.PI / 180;
+  const out = {};
+  solveAtAngle(o, t, a, GRAVITY, out);
+  assert.ok(out.ok);
+  close(out.speed, 12.4, 0.05);
+  const p = positionAt(o, out, GRAVITY, out.time, {});
+  assert.ok(Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) < 0.01, 'lands on the target');
+  const apex = (out.y * out.y) / (2 * GRAVITY);
+  close(apex, 2.45, 0.02);
+  // Uphill target: still exact.
+  const t2 = v(3, 2.2, 6);
+  solveAtAngle(o, t2, a, GRAVITY, out);
+  const p2 = positionAt(o, out, GRAVITY, out.time, {});
+  assert.ok(Math.hypot(p2.x - t2.x, p2.y - t2.y, p2.z - t2.z) < 0.01);
+  // Unreachable at that angle (target above the line of fire) -> not ok; callers fall back (speed cap 24 m/s).
+  solveAtAngle(o, v(0, 20, -3), a, GRAVITY, out);
+  assert.equal(out.ok, false);
+  solveAtAngle(o, v(0, 1.4, 60), a, GRAVITY, out);
+  assert.ok(out.ok && out.speed > 24, 'a 64 m lob would exceed the 24 m/s pass cap');
+});
+
+test('pass receiver by aim: the teammate in the cone wins over a nearer one outside it', () => {
+  const cands = [{ x: 3, z: 0 }, { x: 0, z: 12 }, { x: -2, z: -1 }];
+  assert.equal(pickPassIndex(0, 0, 0, 1, cands), 1);
+  assert.equal(pickPassIndex(0, 0, 1, 0, cands), 0);
+  // Nobody in the cone: nearest.
+  assert.equal(pickPassIndex(0, 0, 0, -1, [{ x: 5, z: 0 }, { x: 2, z: 1 }]), 1);
+  assert.equal(pickPassIndex(0, 0, 0, 1, []), -1);
+});
+
+test('segment length inside a rectangle', () => {
+  const half = { minX: -4.5, maxX: 4.5, minZ: 0, maxZ: 9 };
+  close(segmentLengthInRect(0, -5, 0, 10.5, half), 9);
+  close(segmentLengthInRect(-6, 2, 6, 2, half), 9);
+  close(segmentLengthInRect(-6, -2, -6, 8, half), 0);
+  close(segmentLengthInRect(0, 1, 0, 2, half), 1);
+  // Enters at x = -4.5 (t = 1.25 / 5.75), leaves at z = 0 (t = 5 / 8).
+  close(segmentLengthInRect(-5.75, 5, 0, -3, half), (5 / 8 - 1.25 / 5.75) * Math.hypot(5.75, 8));
 });

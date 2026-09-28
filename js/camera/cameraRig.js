@@ -529,8 +529,13 @@ export class CameraRig {
     const halfL = court ? court.halfL : COURT.length / 2;
     const outD = court ? court.outfieldDepth : COURT.outfieldDepth;
 
-    // 1) What is the story right now? A live ball > a player winding up > the centroid of the infield players.
+    // 1) What is the story right now? A live ball > the holder of the ball > a player winding up > the loose ball >
+    //    the centroid of the infield players.
     const urgency = this._findFocus(this._focusTarget);
+    // Never swing the broadcast toward the bleachers / run-off: a ball out there (ball boy) is framed from the court.
+    const oW = court ? court.outerHalfW ?? halfW + 2.5 : halfW + 2.5, oL = halfL + outD;
+    this._focusTarget.x = clamp(this._focusTarget.x, -oW, oW);
+    this._focusTarget.z = clamp(this._focusTarget.z, -oL, oL);
     if (!this._specInit) this._focus.copy(this._focusTarget);
     const kf = dampFactor(urgency >= 1 ? S.focusSharpnessLive : S.focusSharpness, realDt);
     this._focus.lerp(this._focusTarget, kf);
@@ -597,10 +602,18 @@ export class CameraRig {
       out.y = clamp(out.y, 0.6, 3);
       return 1;
     }
+    // Single ball: follow it in the holder's hands (the attack builds from there), else where it lies loose.
+    const mb = game.balls && game.balls.ball;
+    if (mb && mb.state === 'held' && mb.holder && mb.holder.position) {
+      out.copy(mb.holder.chestPosition || mb.holder.position); out.y = 1.2; return 0.6;
+    }
     let n = 0;
     out.set(0, 0, 0);
     for (const p of game.players) {
       if (p.combat && p.combat.isCharging && p.zone === 'infield') { out.copy(p.position); out.y = 1.2; return 0.5; }
+    }
+    if (mb && (mb.state === 'free' || mb.state === 'stasis') && mb.position) {
+      out.copy(mb.position); out.y = clamp(out.y, 0.6, 3); return 0.4;
     }
     for (const p of game.players) {
       if (p.zone !== 'infield' || (p.health && p.health.isEliminated) || !p.position) continue;

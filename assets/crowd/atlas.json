@@ -1,0 +1,65 @@
+{
+ "key": "{\"h\":[\"Rayne\",\"Specter\",\"Houdini\",\"Gale\",\"Elsa\",\"Shadow\",\"Screws\",\"Chrono\"],\"p\":[{\"clip\":\"idle\",\"at\":0.2},{\"clip\":\"breathe\",\"at\":0.55},{\"clip\":\"cheer\",\"at\":0.45},{\"clip\":\"lookaround\",\"at\":0.35},{\"clip\":\"wave\",\"at\":0.4}],\"c\":8,\"w\":1.2,\"b\":-0.08,\"y\":0.5}",
+ "generator": "Tools/web/bake_crowd.mjs",
+ "tiers": {
+  "64": {
+   "file": "atlas-64.webp",
+   "width": 512,
+   "height": 640
+  },
+  "96": {
+   "file": "atlas-96.webp",
+   "width": 768,
+   "height": 960
+  },
+  "128": {
+   "file": "atlas-128.webp",
+   "width": 1024,
+   "height": 1280
+  }
+ },
+ "cellU": 0.125,
+ "cellV": 0.2,
+ "cells": [
+  {"u":0,"v":0,"gender":"m","pose":"idle"},
+  {"u":0.125,"v":0,"gender":"m","pose":"breathe"},
+  {"u":0.25,"v":0,"gender":"m","pose":"cheer"},
+  {"u":0.375,"v":0,"gender":"m","pose":"lookaround"},
+  {"u":0.5,"v":0,"gender":"m","pose":"wave"},
+  {"u":0.625,"v":0,"gender":"m","pose":"idle"},
+  {"u":0.75,"v":0,"gender":"m","pose":"breathe"},
+  {"u":0.875,"v":0,"gender":"m","pose":"cheer"},
+  {"u":0,"v":0.2,"gender":"m","pose":"lookaround"},
+  {"u":0.125,"v":0.2,"gender":"m","pose":"wave"},
+  {"u":0.25,"v":0.2,"gender":"m","pose":"idle"},
+  {"u":0.375,"v":0.2,"gender":"m","pose":"breathe"},
+  {"u":0.5,"v":0.2,"gender":"m","pose":"cheer"},
+  {"u":0.625,"v":0.2,"gender":"m","pose":"lookaround"},
+  {"u":0.75,"v":0.2,"gender":"m","pose":"wave"},
+  {"u":0.875,"v":0.2,"gender":"f","pose":"idle"},
+  {"u":0,"v":0.4,"gender":"f","pose":"breathe"},
+  {"u":0.125,"v":0.4,"gender":"f","pose":"cheer"},
+  {"u":0.25,"v":0.4,"gender":"f","pose":"lookaround"},
+  {"u":0.375,"v":0.4,"gender":"f","pose":"wave"},
+  {"u":0.5,"v":0.4,"gender":"f","pose":"idle"},
+  {"u":0.625,"v":0.4,"gender":"f","pose":"breathe"},
+  {"u":0.75,"v":0.4,"gender":"f","pose":"cheer"},
+  {"u":0.875,"v":0.4,"gender":"f","pose":"lookaround"},
+  {"u":0,"v":0.6,"gender":"f","pose":"wave"},
+  {"u":0.125,"v":0.6,"gender":"m","pose":"idle"},
+  {"u":0.25,"v":0.6,"gender":"m","pose":"breathe"},
+  {"u":0.375,"v":0.6,"gender":"m","pose":"cheer"},
+  {"u":0.5,"v":0.6,"gender":"m","pose":"lookaround"},
+  {"u":0.625,"v":0.6,"gender":"m","pose":"wave"},
+  {"u":0.75,"v":0.6,"gender":"m","pose":"idle"},
+  {"u":0.875,"v":0.6,"gender":"m","pose":"breathe"},
+  {"u":0,"v":0.8,"gender":"m","pose":"cheer"},
+  {"u":0.125,"v":0.8,"gender":"m","pose":"lookaround"},
+  {"u":0.25,"v":0.8,"gender":"m","pose":"wave"},
+  {"u":0.375,"v":0.8,"gender":"f","pose":"idle"},
+  {"u":0.5,"v":0.8,"gender":"f","pose":"breathe"},
+  {"u":0.625,"v":0.8,"gender":"f","pose":"cheer"},
+  {"u":0.75,"v":0.8,"gender":"f","pose":"lookaround"},
+  {"u":0.875,"v":0.8,"gender":"f","pose":"wave"}
+ ]
+}

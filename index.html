@@ -1,22 +1,25 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html data-du-build="9948314-53215d6c" lang="zh-Hant">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#0b0d10" />
-<meta name="description" content="Dodgeball Ultra - realistic 3v3 superpowered dodgeball in the browser. 寫實 3v3 超能力躲避球。" />
+<meta name="description" content="Dodgeball Ultra - realistic 4v4 superpowered dodgeball in the browser. 寫實 4v4 超能力躲避球。" />
 <title>Dodgeball Ultra</title>
 <link rel="icon" href="data:," />
+<link rel="modulepreload" href="bundle/c7f5af2610/main.js" />
+<link rel="preload" href="assets/manifest.json" as="fetch" crossorigin="anonymous" />
+<link rel="prefetch" href="assets/heroes/bear/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/chrono/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/elsa/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/gale/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/gouki/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/houdini/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/rayne/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/screws/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/shadow/portrait.webp" />
+<link rel="prefetch" href="assets/heroes/specter/portrait.webp" />
 <link rel="stylesheet" href="css/game.css" />
-<script type="importmap">
-{
-  "imports": {
-    "three": "./vendor/three/build/three.module.js",
-    "three/addons/": "./vendor/three/examples/jsm/",
-    "cannon-es": "./vendor/cannon-es/cannon-es.js"
-  }
-}
-</script>
 </head>
 <body>
   <!-- WebGL canvas container -->
@@ -24,6 +27,64 @@
   <!-- DOM overlays (HUD, menus, loading) are built by js/ui/*.js inside this layer -->
   <div id="ui"></div>
   <noscript>Dodgeball Ultra needs JavaScript and WebGL 2. 需要啟用 JavaScript 與 WebGL 2。</noscript>
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="bundle/c7f5af2610/main.js"></script>
+  <script>
+  // Service worker (sw.js): cache-first for the deployed build's versioned files, so repeat visits skip the network.
+  // Off on localhost unless ?sw=1; ?sw=0 is the kill switch (unregisters and deletes the caches). When a new deploy's
+  // worker takes over an already-controlled page that runs an older build (<html data-du-build>, stamped by
+  // Tools/web/build_site.mjs, vs the worker's answer to 'du:version'), the page reloads once - only while hero select
+  // is open, never during a match (otherwise the new build simply loads on the next visit). A page that already runs
+  // the worker's build (the usual case after a deploy: the page was fetched fresh) is not reloaded.
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    var sw = new URLSearchParams(location.search).get('sw');
+    var local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (sw === '0' || (local && sw !== '1')) {
+      navigator.serviceWorker.getRegistrations().then(function (rs) {
+        if (!rs.length) return;
+        rs.forEach(function (r) { r.unregister(); });
+        if (window.caches) caches.keys().then(function (ks) { ks.forEach(function (k) { if (k.indexOf('du-') === 0) caches.delete(k); }); });
+      }).catch(function () {});
+      return;
+    }
+    var hadController = !!navigator.serviceWorker.controller;
+    var timer = 0;
+    function safeToReload() {
+      var du = window.__DU;
+      if (!du || !du.ready) return false;
+      var hs = document.getElementById('hero-select');
+      return !!(hs && hs.classList.contains('open')) && !(du.loader && du.loader().launching);
+    }
+    function tryReload() {
+      if (timer < 0) return;
+      if (!safeToReload()) { if (!timer) timer = setInterval(tryReload, 2000); return; }
+      clearInterval(timer); timer = -1; // once per page
+      location.reload();
+    }
+    var build = document.documentElement.getAttribute('data-du-build') || 'dev';
+    /** Asks the controlling worker for its build; cb(null) when it does not answer. */
+    function workerBuild(cb) {
+      var ctl = navigator.serviceWorker.controller, done = false;
+      var finish = function (v) { if (!done) { done = true; cb(v); } };
+      if (!ctl || typeof MessageChannel === 'undefined') { finish(null); return; }
+      var ch = new MessageChannel();
+      ch.port1.onmessage = function (e) { finish(typeof e.data === 'string' ? e.data : null); };
+      setTimeout(function () { finish(null); }, 3000);
+      try { ctl.postMessage('du:version', [ch.port2]); } catch (e) { finish(null); }
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!hadController) { hadController = true; return; } // first install claimed this page: nothing is stale
+      workerBuild(function (v) { if (v !== build) tryReload(); });
+    });
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (reg) {
+        var last = Date.now();
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible' && Date.now() - last > 30 * 60 * 1000) { last = Date.now(); reg.update().catch(function () {}); }
+        });
+      }).catch(function (e) { console.warn('[sw] registration failed', e); });
+    });
+  })();
+  </script>
 </body>
 </html>

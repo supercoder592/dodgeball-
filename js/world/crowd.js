@@ -1,8 +1,12 @@
 // ---------------------------------------------------------------------------------------------------------------
 // Arena crowd (owner: render). Distant spectators are IMPOSTORS of the real Rocketbox motion-capture humans - never
-// procedural bodies: at boot the hero models are posed with their mocap clips (idle / breathe / cheer / look around /
-// wave) and rendered by an orthographic camera into an sRGB, mip-mapped atlas. The stands are then filled with one
-// InstancedMesh of alpha-tested cards (one draw call) that
+// procedural bodies: the hero models are posed with their mocap clips (idle / breathe / cheer / look around / wave)
+// and rendered by an orthographic camera into an sRGB, mip-mapped atlas. That bake runs OFFLINE
+// (Tools/web/bake_crowd.mjs -> docs/assets/crowd/atlas.json + atlas-<cell>.webp, one image per quality cell width),
+// so the game only downloads one small WebP. build() never waits for it: it returns a hidden InstancedMesh at once
+// and the cards appear when the atlas is decoded. Without a matching pre-baked atlas (missing file, or CROWD changed
+// since the bake - see crowdBakeKey) the same bake runs at runtime as a fallback, after an idle callback.
+// The stands are then filled with one InstancedMesh of alpha-tested cards (one draw call) that
 //   - pick an atlas cell (model x pose), optionally mirrored, with per-instance colour variation / team tint,
 //   - turn partially toward the camera (cylindrical billboard, clamped) so cards never read as paper-thin,
 //   - breathe, sway and - when the match gets exciting (eliminations, perfect catches, round ends) - jump.
@@ -41,8 +45,25 @@ export const CROWD = Object.freeze({
   idleExcite: 0.06,         // a few fans always bounce
   nearHide: 9.0,            // cards closer than this (3D) to the camera collapse (no flat cards filling broadcast rail shots)
   exciteDecay: 0.45,        // excitement lost per real second
-  loadTimeout: 20000,       // ms before giving up on the bake (boot must never hang on the crowd)
+  loadTimeout: 20000,       // ms before giving up on the runtime (fallback) bake
+  atlasFile: 'crowd/atlas.json', // pre-baked atlas description, relative to game.assets.base
 });
+
+/**
+ * Identifies everything in CROWD that changes the baked atlas. Tools/web/bake_crowd.mjs stores it in atlas.json and
+ * build() ignores a pre-baked atlas whose key differs (it bakes at runtime instead). Lighting, materials and
+ * roster.hiddenParts are not part of the key: re-run the bake tool after changing them.
+ * @returns {string}
+ */
+export function crowdBakeKey() {
+  return JSON.stringify({ h: CROWD.heroes, p: CROWD.poses, c: CROWD.atlasColumns, w: CROWD.frameWidth, b: CROWD.frameBottom, y: CROWD.yawJitter });
+}
+
+/**
+ * @typedef {Object} CrowdCell   one baked impostor (atlas cell)
+ * @property {number} u @property {number} v  lower-left corner in texture space (GL convention, v up)
+ * @property {'m'|'f'} gender @property {string} pose  clip key of the baked pose
+ */
 
 /** Team-tint colours (linear) for the two ends of the arena. */
 const _home = new THREE.Color(TEAM_COLORS[TEAM.HOME]);
@@ -66,8 +87,11 @@ const _v2 = new THREE.Vector3();
 export class Crowd {
   constructor() {
     this.mesh = null;
-    this.atlas = null;          // WebGLRenderTarget holding the impostor atlas
-    this.count = 0;
+    this.atlas = null;          // impostor atlas owner (pre-baked THREE.Texture, or the fallback WebGLRenderTarget)
+    this.count = 0;             // cards in the stands (0 until the atlas is ready)
+    /** Settles when the cards are visible (true) or the crowd was skipped (false). Never rejects. */
+    this.ready = Promise.resolve(false);
+    this._token = null;
     this.excitement = 0;
     this._lastT = null;
     this._unsubs = [];
@@ -85,30 +109,39 @@ export class Crowd {
   }
 
   /**
-   * Bakes the atlas and creates the instanced crowd.
+   * Creates the instanced crowd. Resolves immediately with the (still hidden) mesh; the atlas loads - or, as a
+   * fallback, is baked - in the background and the cards appear once it is ready (see `ready`).
    * @param {{ slots:CrowdSlot[], renderer:THREE.WebGLRenderer, envTexture?:THREE.Texture, cellWidth?:number, seed?:number }} o
    * @returns {Promise<THREE.InstancedMesh|null>}
    */
   async build({ slots, renderer, envTexture = null, cellWidth = 128, seed = 77 }) {
     if (!slots || !slots.length || !renderer) return null;
-    let timer = null;
-    const token = { cancelled: false };
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => { token.cancelled = true; console.warn('[crowd] asset load timed out - stands stay empty'); resolve(null); }, CROWD.loadTimeout);
-    });
-    const baked = await Promise.race([this._bake(renderer, envTexture, cellWidth, token), timeout]);
-    clearTimeout(timer);
-    if (!baked || token.cancelled) return null;
-    this.atlas = baked.rt;
-    this._createMesh(slots, baked, seed);
+    this._createMesh(slots);
     this._subscribe();
+    const token = { cancelled: false };
+    this._token = token;
+    this.ready = this._populate(slots, renderer, envTexture, cellWidth, seed, token).catch((e) => {
+      console.warn('[crowd] skipped', e);
+      return false;
+    });
     return this.mesh;
   }
+
+  /**
+   * Bakes the impostor atlas now (used by the runtime fallback and by Tools/web/bake_crowd.mjs).
+   * @param {THREE.WebGLRenderer} renderer
+   * @param {THREE.Texture|null} envTexture
+   * @param {number} cellWidth  cell width in px (height = 2x)
+   * @returns {Promise<{ rt:THREE.WebGLRenderTarget, cells:CrowdCell[], cellU:number, cellV:number, width:number, height:number }|null>}
+   */
+  bakeAtlas(renderer, envTexture, cellWidth) { return this._bake(renderer, envTexture, cellWidth); }
 
   /** Raises the crowd's excitement (0..1); it decays in real time. */
   excite(amount) { this.excitement = Math.min(1, Math.max(this.excitement, amount)); }
 
   dispose() {
+    if (this._token) this._token.cancelled = true;
+    this._token = null;
     for (const off of this._unsubs) off();
     this._unsubs.length = 0;
     if (this.mesh) {
@@ -120,6 +153,62 @@ export class Crowd {
     }
     this.atlas?.dispose();
     this.atlas = null;
+    this.count = 0;
+  }
+
+  // ================================================================== atlas: pre-baked or runtime fallback
+
+  /** Loads the pre-baked atlas, else bakes one (after an idle callback), then shows the cards. */
+  async _populate(slots, renderer, envTexture, cellWidth, seed, token) {
+    let atlas = await this._loadAtlas(cellWidth);
+    if (!atlas && !token.cancelled) {
+      await idle();
+      if (token.cancelled) return false;
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => { token.cancelled = true; console.warn('[crowd] bake timed out - stands stay empty'); resolve(null); }, CROWD.loadTimeout);
+      });
+      const baked = await Promise.race([this._bake(renderer, envTexture, cellWidth, token), timeout]);
+      clearTimeout(timer);
+      if (baked) atlas = { owner: baked.rt, texture: baked.rt.texture, cells: baked.cells, cellU: baked.cellU, cellV: baked.cellV };
+    }
+    if (!atlas) return false;
+    if (token.cancelled || !this.mesh) {
+      // Only the render target is ours alone; a pre-baked texture stays in the shared asset cache.
+      if (atlas.owner !== atlas.texture) atlas.owner.dispose();
+      return false;
+    }
+    this.atlas = atlas.owner;
+    this._fillMesh(slots, atlas, seed);
+    return true;
+  }
+
+  /**
+   * Pre-baked atlas for the tier closest to `cellWidth` (the smallest tier >= cellWidth, else the largest).
+   * @returns {Promise<{ owner:THREE.Texture, texture:THREE.Texture, cells:CrowdCell[], cellU:number, cellV:number }|null>}
+   */
+  async _loadAtlas(cellWidth) {
+    const assets = game.assets;
+    if (!assets || typeof fetch === 'undefined') return null;
+    let desc = null;
+    try {
+      const res = await fetch(assets.base + CROWD.atlasFile);
+      if (res.ok) desc = await res.json();
+    } catch (e) { /* offline or missing: runtime bake */ }
+    if (!desc || !desc.tiers) { console.info('[crowd] no pre-baked atlas - baking at runtime (run Tools/web/bake_crowd.mjs)'); return null; }
+    if (desc.key !== crowdBakeKey()) { console.info('[crowd] pre-baked atlas is stale (CROWD changed) - baking at runtime'); return null; }
+    const widths = Object.keys(desc.tiers).map(Number).filter((w) => w > 0).sort((a, b) => a - b);
+    if (!widths.length) return null;
+    const w = widths.find((x) => x >= cellWidth) || widths[widths.length - 1];
+    const tier = desc.tiers[w];
+    if (!tier || !tier.file || !Array.isArray(desc.cells) || !desc.cells.length || !(desc.cellU > 0) || !(desc.cellV > 0)) return null;
+    const dir = CROWD.atlasFile.slice(0, CROWD.atlasFile.lastIndexOf('/') + 1);
+    const texture = await assets.textureAsync(dir + tier.file, true);
+    if (!texture || !texture.image) return null;
+    // Same sampling as the render-target atlas: trilinear, no anisotropy (the image is stored bottom-up, GL rows).
+    texture.anisotropy = 1;
+    texture.name = 'crowd.atlas';
+    return { owner: texture, texture, cells: desc.cells, cellU: desc.cellU, cellV: desc.cellV };
   }
 
   // ================================================================== baking
@@ -131,8 +220,7 @@ export class Crowd {
     const heroes = CROWD.heroes.filter((id) => manifest.heroes[id]);
     if (!heroes.length) return null;
 
-    // ---- load models, colour maps and clips in parallel (GLTFs/clips are cached and reused by the avatars)
-    const loader = new THREE.TextureLoader();
+    // ---- load models, colour maps and clips in parallel (all cached in game.assets and shared with the avatars)
     const models = (await Promise.all(heroes.map(async (id) => {
       const def = manifest.heroes[id];
       try {
@@ -140,11 +228,8 @@ export class Crowd {
         const maps = {};
         await Promise.all(Object.entries(def.materials || {}).map(async ([name, spec]) => {
           if (!spec.map) return;
-          try {
-            const t = await loader.loadAsync(assets.base + def.folder + spec.map);
-            t.colorSpace = THREE.SRGBColorSpace; t.flipY = false;
-            maps[name] = t;
-          } catch (e) { /* a missing map only darkens that part */ }
+          const t = await assets.textureAsync(def.folder + spec.map, true);
+          if (t && t.image) maps[name] = t; // a missing map only darkens that part
         }));
         return { id, def, gltf, maps, g: def.gender === 'female' ? 'f' : 'm' };
       } catch (e) {
@@ -182,10 +267,7 @@ export class Crowd {
     for (let m = 0; m < models.length; m++) {
       for (const p of CROWD.poses) if (clips[models[m].g][p.clip]) cells.push({ m, pose: p });
     }
-    if (!cells.length || token.cancelled) {
-      for (const info of models) for (const t of Object.values(info.maps)) t.dispose();
-      return null;
-    }
+    if (!cells.length || token.cancelled) return null;
     const cols = Math.min(CROWD.atlasColumns, cells.length), rows = Math.ceil(cells.length / cols);
     const cellH = cellW * 2, W = cols * cellW, H = rows * cellH;
     const rt = new THREE.WebGLRenderTarget(W, H, {
@@ -259,25 +341,24 @@ export class Crowd {
       renderer.setClearColor(prevClear, prevAlpha);
       renderer.autoClear = prevAutoClear;
       renderer.shadowMap.enabled = prevShadow;
-      for (const mat of created) mat.dispose();
-      for (const info of models) for (const t of Object.values(info.maps)) t.dispose();
+      for (const mat of created) mat.dispose(); // the colour maps stay cached for the avatars
     }
     if (!cellInfo.length) { rt.dispose(); return null; }
-    return { rt, cells: cellInfo, cellU: cellW / W, cellV: cellH / H };
+    return { rt, cells: cellInfo, cellU: cellW / W, cellV: cellH / H, width: W, height: H };
   }
 
   // ================================================================== instanced cards
 
-  _createMesh(slots, baked, seed) {
-    const rng = new Rng(seed);
+  /** Hidden InstancedMesh with one card per slot; _fillMesh() assigns the atlas cells and shows it. */
+  _createMesh(slots) {
     const fw = CROWD.frameWidth, fh = fw * 2;
     const geo = new THREE.PlaneGeometry(fw, fh);
     geo.translate(0, fh / 2 + CROWD.frameBottom, 0);
     const n = slots.length;
-    const aCell = new Float32Array(n * 4), aMotion = new Float32Array(n * 2);
-    this.uniforms.uCellSize.value.set(baked.cellU, baked.cellV);
+    geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4));
+    geo.setAttribute('aMotion', new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2));
 
-    const mat = new THREE.MeshBasicMaterial({ map: baked.rt.texture, alphaTest: 0.5, side: THREE.DoubleSide });
+    const mat = new THREE.MeshBasicMaterial({ alphaTest: 0.5, side: THREE.DoubleSide });
     mat.name = 'crowd';
     const U = this.uniforms;
     mat.onBeforeCompile = (shader) => {
@@ -318,7 +399,38 @@ export class Crowd {
     mesh.userData.noAO = true;       // alpha-tested cards must not enter the AO G-buffer
     mesh.castShadow = false;
     mesh.receiveShadow = false;
-    const cells = baked.cells;
+    mesh.visible = false;            // until an atlas is ready
+
+    // Real-time animation clock + excitement decay, evaluated once per rendered frame.
+    mesh.onBeforeRender = () => {
+      const now = game.time ? game.time.realNow : performance.now() / 1000;
+      const dt = this._lastT === null ? 0 : Math.max(0, Math.min(0.1, now - this._lastT));
+      if (dt === 0 && this._lastT !== null) return; // several passes in one frame
+      this._lastT = now;
+      this.excitement = Math.max(0, this.excitement - CROWD.exciteDecay * dt);
+      U.uTime.value = now;
+      U.uExcite.value = Math.max(CROWD.idleExcite, this.excitement);
+    };
+    this.mesh = mesh;
+  }
+
+  /**
+   * Picks an atlas cell, height, mirror, phase, energy and colour per card, binds the atlas and shows the mesh.
+   * @param {CrowdSlot[]} slots
+   * @param {{ texture:THREE.Texture, cells:CrowdCell[], cellU:number, cellV:number }} atlas
+   * @param {number} seed
+   */
+  _fillMesh(slots, atlas, seed) {
+    const mesh = this.mesh;
+    const geo = mesh.geometry;
+    const n = slots.length;
+    const aCellAttr = geo.getAttribute('aCell'), aMotionAttr = geo.getAttribute('aMotion');
+    const aCell = aCellAttr.array, aMotion = aMotionAttr.array;
+    this.uniforms.uCellSize.value.set(atlas.cellU, atlas.cellV);
+    mesh.material.map = atlas.texture;
+    mesh.material.needsUpdate = true;
+    const rng = new Rng(seed);
+    const cells = atlas.cells;
     for (let i = 0; i < n; i++) {
       const s = slots[i];
       const cell = cells[rng.int(0, cells.length)];
@@ -339,24 +451,13 @@ export class Crowd {
       _tmpColor.offsetHSL(rng.range(-0.02, 0.02), 0, 0).multiplyScalar(b);
       mesh.setColorAt(i, _tmpColor);
     }
-    geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(aCell, 4));
-    geo.setAttribute('aMotion', new THREE.InstancedBufferAttribute(aMotion, 2));
+    aCellAttr.needsUpdate = true;
+    aMotionAttr.needsUpdate = true;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere();
     mesh.computeBoundingBox?.();
-
-    // Real-time animation clock + excitement decay, evaluated once per rendered frame.
-    mesh.onBeforeRender = () => {
-      const now = game.time ? game.time.realNow : performance.now() / 1000;
-      const dt = this._lastT === null ? 0 : Math.max(0, Math.min(0.1, now - this._lastT));
-      if (dt === 0 && this._lastT !== null) return; // several passes in one frame
-      this._lastT = now;
-      this.excitement = Math.max(0, this.excitement - CROWD.exciteDecay * dt);
-      U.uTime.value = now;
-      U.uExcite.value = Math.max(CROWD.idleExcite, this.excitement);
-    };
-    this.mesh = mesh;
+    mesh.visible = true;
     this.count = n;
   }
 
@@ -371,6 +472,14 @@ export class Crowd {
     on(EV.MatchEnded, () => this.excite(1));
     on(EV.AbilityCast, (e) => { if (e && e.slot === SLOT.ULTIMATE) this.excite(0.6); });
   }
+}
+
+/** Resolves after an idle callback (or a short timeout), so a fallback bake does not compete with the boot. */
+function idle() {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: 2000 });
+    else setTimeout(resolve, 200);
+  });
 }
 
 /** Removes horizontal root translation from a clip (keeps the vertical bob), like the avatar module does. */

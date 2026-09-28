@@ -19,6 +19,11 @@ test('playAreaBounds: both halves + outfield strips of an 18x9 court', () => {
   assert.deepEqual(b, { minX: -6, maxX: 6, minZ: -12, maxZ: 12 });
 });
 
+test('playAreaBounds: U outfields use the court side-band width (2.5 m -> +/-7 x +/-12)', () => {
+  const b = playAreaBounds({ width: 9, length: 18, outfieldDepth: 3, sideOutfieldWidth: 2.5 });
+  assert.deepEqual(b, { minX: -7, maxX: 7, minZ: -12, maxZ: 12 });
+});
+
 test('resolveZoneCenter: limits range, clamps to the area, falls back to forward', () => {
   const area = { minX: -6, maxX: 6, minZ: -12, maxZ: 12 };
   const a = resolveZoneCenter(0, -6, 0, 40, 0, 1, 25, area);

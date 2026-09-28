@@ -10,7 +10,8 @@
 //      limited and never brakes (momentum preserved). Slides keep their momentum and lose speed to friction,
 //   3. vertical motion: gravity x gravityMul, jump v = sqrt(2 g h), ground at the court floor (or collider tops),
 //   4. integrate, resolve AABB colliders (game.arena.colliders) and teammate capsules, clamp into the confinement
-//      bounds (removing outward velocity),
+//      region (removing outward velocity). A U-shaped outfield region has a hole (the opponent's half): the step is
+//      limited predictively at the hole wall and resolved out through the nearest exit edge (world/courtMath.js),
 //   5. turn toward the explicit facing request (aim) > slide direction > move direction, and publish lean readouts
 //      (`yawRate`, `planarAccel`).
 // The motor writes `player.position` (= player.root.position), `player.yaw` and `player.velocity` directly.
@@ -22,6 +23,7 @@ import {
   clamp, clamp01, moveTowards, moveTowardsAngle, deltaAngle, accelerationCurve, jumpSpeed, slideStartSpeed,
   slideFrictionStep, knockbackControl, clampAxis,
 } from './player_math.js';
+import { clampOutOfHole } from '../world/courtMath.js';
 
 /** Movement regimes requested by the state machine. */
 export const MOTOR_MODE = Object.freeze({
@@ -35,6 +37,7 @@ const _planar = new THREE.Vector3();
 const _lateral = new THREE.Vector3();
 const _desired = new THREE.Vector3();
 const _axis = { p: 0, v: 0 };
+const _hs = { px: 0, pz: 0, vx: 0, vz: 0 };
 const ZERO = new THREE.Vector3();
 
 /** Fallback profile (mirrors roster BASE_MOVEMENT) so a bare Motor never reads undefined. */
@@ -149,15 +152,22 @@ export class Motor {
     this._tractionMods = new Map();
     this._speedModProduct = 1;
     this._tractionMin = 1;
-    this._bounds = { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity };
+    this._bounds = { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity, hole: null };
     this._hasBounds = false;
+    /** Hole of the confinement region (U outfield), preallocated; _hasHole = false for plain boxes. */
+    this._hole = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+    this._hasHole = false;
   }
 
   // ------------------------------------------------------------------ derived
   /** Effective gravity (m/s^2) = g x profile.gravityMul. */
   get gravity() { return GRAVITY * Math.max(0, this.profile.gravityMul ?? 1); }
-  /** Active confinement bounds or null. */
-  get confinement() { return this._hasBounds ? this._bounds : null; }
+  /** Active confinement bounds or null ({minX,maxX,minZ,maxZ,hole}: hole null for a plain box). */
+  get confinement() {
+    if (!this._hasBounds) return null;
+    this._bounds.hole = this._hasHole ? this._hole : null;
+    return this._bounds;
+  }
   get moveDirection() { return this._moveDir; }
   get moveMagnitude() { return this._moveMag; }
   get slideCooldownRemaining() { return this._slideCooldown; }
@@ -361,12 +371,26 @@ export class Motor {
     this._recomputeTractionMods();
   }
 
-  /** @param {{minX:number,maxX:number,minZ:number,maxZ:number}|null} bounds already inset for the capsule (Court.confinement) */
+  /**
+   * @param {{minX:number,maxX:number,minZ:number,maxZ:number,hole?:object|null}|null} bounds already inset for the
+   *        capsule (Court.confinement); a missing hole means a plain box (Gouki's extended tackle box has none)
+   */
   setConfinement(bounds) {
-    if (!bounds) { this._hasBounds = false; return; }
+    if (!bounds) { this._hasBounds = false; this._hasHole = false; return; }
     this._bounds.minX = bounds.minX; this._bounds.maxX = bounds.maxX;
     this._bounds.minZ = bounds.minZ; this._bounds.maxZ = bounds.maxZ;
+    const h = bounds.hole;
+    this._hasHole = !!h;
+    if (h) { this._hole.minX = h.minX; this._hole.maxX = h.maxX; this._hole.minZ = h.minZ; this._hole.maxZ = h.maxZ; }
     this._hasBounds = true;
+  }
+
+  /** Keeps (pos, vel) out of the confinement hole: predictive when dt > 0, resolve when dt = 0. */
+  _clampHole(pos, vel, dt) {
+    if (!this._hasHole) return;
+    _hs.px = pos.x; _hs.pz = pos.z; _hs.vx = vel.x; _hs.vz = vel.z;
+    if (!clampOutOfHole(_hs, this._hole, this._bounds, dt)) return;
+    pos.x = _hs.px; pos.z = _hs.pz; vel.x = _hs.vx; vel.z = _hs.vz;
   }
 
   // ------------------------------------------------------------------ simulation
@@ -419,6 +443,7 @@ export class Motor {
       const b = this._bounds;
       _axis.p = pos.x; _axis.v = vel.x; clampAxis(_axis, b.minX, b.maxX, dt); pos.x = _axis.p; vel.x = _axis.v;
       _axis.p = pos.z; _axis.v = vel.z; clampAxis(_axis, b.minZ, b.maxZ, dt); pos.z = _axis.p; vel.z = _axis.v;
+      this._clampHole(pos, vel, dt);
     }
 
     // ---- integrate + resolve
@@ -431,6 +456,7 @@ export class Motor {
       const b = this._bounds;
       _axis.p = pos.x; _axis.v = vel.x; clampAxis(_axis, b.minX, b.maxX, 0); pos.x = _axis.p; vel.x = _axis.v;
       _axis.p = pos.z; _axis.v = vel.z; clampAxis(_axis, b.minZ, b.maxZ, 0); pos.z = _axis.p; vel.z = _axis.v;
+      this._clampHole(pos, vel, 0);
     }
 
     // ---- ground contact

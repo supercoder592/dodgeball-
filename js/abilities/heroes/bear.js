@@ -3,7 +3,10 @@
 //   PASSIVE  Iron Mitts      (鐵手套)   Perfect Catch window x1.5 (0.225 s instead of 0.15 s).
 //   SKILL    Magnetic Pull   (磁力牽引) 1.5 s, 5 m field around his palm pulls enemy balls (and, with empty hands, a
 //                                       loose ball) into his hands. CD 15 s.
-//   ULTIMATE Aegis Barrier   (神盾屏障) 6 s energy wall at centre court on his side blocking every enemy throw.
+//   ULTIMATE Aegis Barrier   (神盾屏障) 6 s energy wall at centre court on his side blocking every throw (and lob pass)
+//                                       from the enemy court. It does NOT cover the sides or the back: the enemy U
+//                                       outfield surrounds Bear's half. Castable from the outfield too (a Bear starting
+//                                       outfielder shields his infield teammates).
 // World objects live in ../shared/bearMagneticField.js and ../shared/bearAegisWall.js.
 // ---------------------------------------------------------------------------------------------------------------
 import { game } from '../../game.js';
@@ -150,22 +153,27 @@ export class BearAegisBarrier extends AbilityBase {
     this.wall = null;
   }
 
-  /** Worth it when several enemies are armed (a volley is coming) or when Bear's side is behind. */
+  /**
+   * Single ball: the wall only covers throws from the enemy INFIELD (their outfield throws from the sides and back).
+   * Worth it when an enemy infielder holds the ball and winds up (a front throw is imminent), or holds it while Bear's
+   * side is behind; worthless while an enemy OUTFIELDER holds it.
+   */
   evaluateAI(ctx) {
     const o = this.owner;
-    if (!ctx || !isInfield(o)) return 0;
+    if (!ctx) return 0;
     const w = this.def.aiWeight ?? 0.9;
-    let holders = 0;
+    let infieldHolder = null;
     const players = game.players;
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
-      if (!p || !game.areEnemies(o, p) || !isInfield(p) || !isAlive(p)) continue;
-      if (p.combat && (p.combat.hasBall || p.combat.isCharging)) holders++;
+      if (!p || !game.areEnemies(o, p) || !isAlive(p) || !(p.combat && p.combat.hasBall)) continue;
+      if (!isInfield(p)) return 0; // held by an enemy outfielder: the wall does not cover the sides / back
+      infieldHolder = p;
     }
+    if (!infieldHolder) return 0;
     const losing = ctx.alliesInfield < ctx.enemiesInfield;
-    if (holders >= 2) return w;
-    if (holders >= 1 && (losing || ctx.alliesInfield <= 1)) return w * 0.8;
-    if (losing && ctx.timeLeft !== undefined && ctx.timeLeft < 30) return w * 0.5;
+    if (infieldHolder.combat.isCharging) return w;
+    if (losing || ctx.alliesInfield <= 1) return w * 0.8;
     return 0;
   }
 }

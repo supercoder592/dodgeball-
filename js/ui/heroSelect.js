@@ -109,7 +109,7 @@ class HeroSelectScreen {
     this.index = i;
     this._render();
   }
-  _setTeam(t) { this.team = t; this._render(); this._save(); }
+  _setTeam(t) { this.team = t === TEAM.AWAY ? TEAM.AWAY : TEAM.HOME; this._render(); this._save(); }
   _setDifficulty(d) { this.difficulty = d; this._render(); this._save(); }
   _stepDifficulty(dir) {
     const i = DIFFICULTIES.findIndex((d) => d.id === this.difficulty);
@@ -165,7 +165,7 @@ class HeroSelectScreen {
         <header class="hs-top">
           <div class="hs-brand"><b>DODGEBALL</b><span>ULTRA</span></div>
           <div class="hs-heading">SELECT YOUR HERO <small>選擇英雄</small></div>
-          <div class="hs-mode">3 v 3 · BEST OF 3 <small>三戰兩勝</small></div>
+          <div class="hs-mode"><span>4 v 4 · 3 IN + 1 OUT · ONE BALL · BEST OF 3</span> <small>內場 3 人＋外場 1 人 · 單球 · 三戰兩勝</small></div>
         </header>
         <main class="hs-main">
           <div class="hs-grid" role="listbox" aria-label="Heroes"></div>
@@ -228,7 +228,7 @@ class HeroSelectScreen {
       root.addEventListener('click', (e) => {
         const card = e.target.closest('.hs-card');
         if (card) { this._select(Number(card.dataset.i)); return; }
-        const t = e.target.closest('[data-team]');
+        const t = e.target.closest('button[data-team]'); // the root also carries data-team (current team)
         if (t) { this._setTeam(Number(t.dataset.team)); return; }
         const d = e.target.closest('[data-diff]');
         if (d) { this._setDifficulty(d.dataset.diff); return; }

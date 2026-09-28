@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { game } from '../../game.js';
 import { TEAM, ZONE } from '../../core/constants.js';
 import { EV } from '../../core/events.js';
+import { Court } from '../../world/court.js';
 import { AbilityBase, registerAbility, FAIL, INTERRUPT } from '../abilityBase.js';
 import { heroMovement } from '../roster.js';
 import { depthIntoOwnHalf, extendPastCentreLine, inFrontWithin, inChargeVolume } from '../shared/screwsGadgetMath.js';
@@ -31,6 +32,17 @@ const _c2 = new THREE.Vector3();
 const _back = new THREE.Vector3();
 const _home = new THREE.Vector3();
 const _imp = new THREE.Vector3();
+
+/** Per-team INFIELD confinement cache (Court.confinement allocates): carried victims never leave their own half. */
+const _infieldConf = { court: null, bounds: [null, null] };
+function clampIntoInfield(team, p) {
+  const court = game.court;
+  if (!court || !(team === TEAM.HOME || team === TEAM.AWAY)) return p;
+  if (_infieldConf.court !== court) { _infieldConf.court = court; _infieldConf.bounds[0] = _infieldConf.bounds[1] = null; }
+  const i = team === TEAM.HOME ? 0 : 1;
+  const b = _infieldConf.bounds[i] || (_infieldConf.bounds[i] = court.confinement(team, ZONE.INFIELD));
+  return Court.clamp(b, p);
+}
 
 // ================================================================== PASSIVE: Thick Hide
 
@@ -399,6 +411,10 @@ export class GoukiTackleIntercept extends AbilityBase {
       if (!isAlive(v)) continue;
       const lateral = n > 1 ? (i - (n - 1) * 0.5) * 0.55 : 0;
       _pt.copy(o.position).addScaledVector(this._dir, p.carryDistance).addScaledVector(_r, lateral);
+      // A sideways / diagonal charge near a sideline would otherwise carry the victim into Gouki's team's U outfield
+      // arm (or a backward one into Gouki's half): keep them in their own infield (they survive a prevented
+      // elimination standing there).
+      clampIntoInfield(v.team, _pt);
       _pt.y += p.carryLift;
       v.teleport?.(_pt, yaw);
     }
@@ -629,10 +645,13 @@ export class GoukiEarthquakeSlam extends AbilityBase {
     pulse('heavyHit', p.pulse, 0.35);
   }
 
-  /** Best when grounded enemies hold balls (they fumble them) or charge a throw. */
+  /**
+   * Best when a grounded enemy infielder holds the ball (they fumble it) or charges a throw. The slam is global, so it
+   * is castable from the outfield too (a Gouki starting outfielder); enemy OUTFIELD holders are immune.
+   */
   evaluateAI(ctx) {
     const o = this.owner;
-    if (!ctx || !isInfield(o) || !isGrounded(o)) return 0;
+    if (!ctx || !isGrounded(o)) return 0;
     const w = this.def.aiWeight ?? 0.8;
     let grounded = 0, armed = 0;
     const players = game.players;

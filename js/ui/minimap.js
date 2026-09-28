@@ -1,6 +1,9 @@
 // ---------------------------------------------------------------------------------------------------------------
-// HUD mini-map (2D canvas): the 18 x 9 m court with both outfield strips, players and balls, oriented so the viewer's
-// team attacks "up". Enemies that are cloaked or have Silent Footsteps (Gale's passive) are hidden unless revealed.
+// HUD mini-map (2D canvas): the 18 x 9 m court with both teams' U outfields (each U = two side arms + the back strip
+// around the OPPONENT's half), the players and the single match ball, oriented so the viewer's team attacks "up".
+// Markers: filled dot = infield, hollow ring = eliminated outfielder, hollow diamond = starting outfielder (元外野),
+// gold ring = ball holder, pulsing ring = where an awarded / ball-boy ball will reappear. Enemies that are cloaked or
+// have Silent Footsteps (Gale's passive) are hidden unless revealed (and so is the ball in their hands).
 // The static court is cached in an offscreen canvas; the dynamic layer is redrawn by the HUD at ~20 Hz.
 // ---------------------------------------------------------------------------------------------------------------
 import { game } from '../game.js';
@@ -9,9 +12,10 @@ import { cssColor } from './format.js';
 
 export const MINIMAP = Object.freeze({
   padding: 7,            // px around the drawing
-  sideMargin: 1.5,       // m of outfield strip beyond each sideline (matches Court.outfieldBounds)
   playerRadius: 4.3,     // px
-  ballRadius: 2.1,       // px
+  ballRadius: 3.2,       // px (the only ball: emphasised, with a white halo)
+  holderRing: '#ffc940', // ring around the ball holder
+  awardPulse: 1.6,       // Hz of the award-spot ring
   liveTail: 0.07,        // s of velocity drawn as a tail on live balls
 });
 
@@ -38,6 +42,8 @@ export class Minimap {
     this._flip = 0;
     this._static = null;
     this._staticValid = false;
+    /** Latest award spot {x, z, team, ball} (setAward), shown while the ball is hidden for a hand-over. */
+    this._award = null;
     this._ro = null;
     const measure = () => {
       const r = canvas.getBoundingClientRect();
@@ -76,10 +82,18 @@ export class Minimap {
     const halfL = c ? c.halfL : COURT.length / 2;
     const halfW = c ? c.halfW : COURT.width / 2;
     const depth = c ? c.outfieldDepth : COURT.outfieldDepth;
+    const side = c && Number.isFinite(c.sideOutfieldWidth) ? c.sideOutfieldWidth : (COURT.sideOutfieldWidth || 2.5);
     const pad = MINIMAP.padding;
-    const totalW = 2 * (halfW + MINIMAP.sideMargin), totalL = 2 * (halfL + depth);
+    const totalW = 2 * (halfW + side), totalL = 2 * (halfL + depth);
     const s = Math.max(0.1, Math.min((this._w - 2 * pad) / totalW, (this._h - 2 * pad) / totalL));
-    return { halfL, halfW, depth, s, cx: this._w / 2, cy: this._h / 2 };
+    return { halfL, halfW, depth, side, s, cx: this._w / 2, cy: this._h / 2 };
+  }
+
+  /** Remembers the latest ball hand-over (EV.BallAwarded payload) for the pulsing award-spot ring. */
+  setAward(e) {
+    if (!e || !e.position) { this._award = null; return; }
+    const a = this._award || (this._award = { x: 0, z: 0, team: TEAM.NONE, ball: null });
+    a.x = e.position.x; a.z = e.position.z; a.team = e.team; a.ball = e.ball || null;
   }
 
   /** Builds the cached court drawing for the current size / orientation. */
@@ -97,19 +111,29 @@ export class Minimap {
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); }
       if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1); }
     };
-    const m = MINIMAP.sideMargin;
-    // Hardwood + halves tinted by the defending team.
+    const oW = g.halfW + g.side, oL = g.halfL + g.depth;
+    // Halves tinted by the defending team.
     rect(-g.halfW, -g.halfL, g.halfW, 0, 'rgba(255,106,43,0.13)');
     rect(-g.halfW, 0, g.halfW, g.halfL, 'rgba(43,140,255,0.13)');
-    // Outfield strips: behind the Home baseline stands AWAY's outfield, behind the Away baseline HOME's.
-    rect(-g.halfW - m, -g.halfL - g.depth, g.halfW + m, -g.halfL, 'rgba(43,140,255,0.22)', 'rgba(255,255,255,0.18)');
-    rect(-g.halfW - m, g.halfL, g.halfW + m, g.halfL + g.depth, 'rgba(255,106,43,0.22)', 'rgba(255,255,255,0.18)');
+    // U outfields in the owning team's tint: Home's U surrounds the Away half (+Z), Away's the Home half (-Z).
+    const court = game.court;
+    const drawU = (team, fill) => {
+      const rects = court && typeof court.outfieldRects === 'function' ? court.outfieldRects(team) : null;
+      if (rects) { for (const r of rects) rect(r.minX, r.minZ, r.maxX, r.maxZ, fill, 'rgba(255,255,255,0.18)'); return; }
+      const sz = team === TEAM.HOME ? 1 : -1; // fallback geometry (same as Court.outfieldRects)
+      rect(-oW, 0, -g.halfW, sz * g.halfL, fill, 'rgba(255,255,255,0.18)');
+      rect(g.halfW, 0, oW, sz * g.halfL, fill, 'rgba(255,255,255,0.18)');
+      rect(-oW, sz * g.halfL, oW, sz * oL, fill, 'rgba(255,255,255,0.18)');
+    };
+    drawU(TEAM.HOME, 'rgba(255,106,43,0.22)');
+    drawU(TEAM.AWAY, 'rgba(43,140,255,0.22)');
+    rect(-oW, -oL, oW, oL, null, 'rgba(255,255,255,0.4)', 1);
     rect(-g.halfW, -g.halfL, g.halfW, g.halfL, null, 'rgba(255,255,255,0.75)', 1.2);
-    // Centre line.
+    // Centre line across the full width (it also splits the two teams' arms).
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(g.cx - g.halfW * g.s, g.cy); ctx.lineTo(g.cx + g.halfW * g.s, g.cy);
+    ctx.moveTo(g.cx - oW * g.s, g.cy); ctx.lineTo(g.cx + oW * g.s, g.cy);
     ctx.stroke();
     this._staticValid = true;
     this._flip = flip;
@@ -128,29 +152,37 @@ export class Minimap {
     ctx.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
     const k = g.s * flip;
 
-    // Balls (held balls are shown on the holder).
-    const balls = game.balls && (game.balls.active || game.balls.matchBalls);
-    if (balls) {
-      for (let i = 0; i < balls.length; i++) {
-        const b = balls[i];
-        if (!b || !b.position || b.state === 'held' || b.state === 'despawned') continue;
-        const x = g.cx - b.position.x * k, y = g.cy - b.position.z * k;
-        if (b.state === 'live' && b.velocity) {
-          ctx.strokeStyle = 'rgba(255,90,70,0.8)';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(x, y);
-          ctx.lineTo(x + b.velocity.x * k * MINIMAP.liveTail, y + b.velocity.z * k * MINIMAP.liveTail);
-          ctx.stroke();
-          ctx.fillStyle = '#ff4b3a';
-        } else if (b.state === 'stasis') {
-          ctx.strokeStyle = '#9ad9ff';
-          ctx.lineWidth = 1.2;
-          ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius + 2, 0, Math.PI * 2); ctx.stroke();
-          ctx.fillStyle = '#d64a3a';
-        } else ctx.fillStyle = '#e8b0a4';
-        ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius, 0, Math.PI * 2); ctx.fill();
-      }
+    // The single match ball (a held ball is shown as the holder's gold ring). Pooled extras, if any, are skipped.
+    const mb = game.balls ? (game.balls.ball || (game.balls.matchBalls && game.balls.matchBalls[0]) || null) : null;
+    const aw = this._award;
+    if (mb && mb.state === 'despawned' && aw && (!aw.ball || aw.ball === mb)) {
+      // Hand-over in progress: pulsing ring at the award spot, in the receiving team's colour.
+      const ph = 0.5 + 0.5 * Math.sin(game.time.realNow * Math.PI * 2 * MINIMAP.awardPulse);
+      const x = g.cx - aw.x * k, y = g.cy - aw.z * k;
+      ctx.strokeStyle = aw.team === TEAM.AWAY ? AWAY : aw.team === TEAM.HOME ? HOME : '#ffffff';
+      ctx.globalAlpha = 0.45 + 0.55 * ph;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius + 2 + 2 * ph, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (mb && mb.position && mb.state !== 'held' && mb.state !== 'despawned') {
+      const x = g.cx - mb.position.x * k, y = g.cy - mb.position.z * k;
+      if (mb.state === 'live' && mb.velocity) {
+        ctx.strokeStyle = 'rgba(255,90,70,0.8)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + mb.velocity.x * k * MINIMAP.liveTail, y + mb.velocity.z * k * MINIMAP.liveTail);
+        ctx.stroke();
+        ctx.fillStyle = '#ff4b3a';
+      } else if (mb.state === 'stasis') {
+        ctx.strokeStyle = '#9ad9ff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius + 2.5, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#d64a3a';
+      } else ctx.fillStyle = '#ff6a55';
+      ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, MINIMAP.ballRadius + 0.8, 0, Math.PI * 2); ctx.stroke();
     }
 
     // Players.
@@ -179,6 +211,10 @@ export class Minimap {
         ctx.lineTo(x - ux * r * 0.8 + uy * r * 0.85, y - uy * r * 0.8 - ux * r * 0.85);
         ctx.closePath();
         ctx.fill(); ctx.stroke();
+        if (p.combat && p.combat.hasBall) {
+          ctx.strokeStyle = MINIMAP.holderRing; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
+        }
         continue;
       }
       if (down) {
@@ -191,16 +227,23 @@ export class Minimap {
         ctx.stroke();
         continue;
       }
-      ctx.beginPath(); ctx.arc(x, y, MINIMAP.playerRadius, 0, Math.PI * 2);
-      if (p.zone === ZONE.OUTFIELD) {
+      const r = MINIMAP.playerRadius;
+      if (p.zone === ZONE.OUTFIELD && p.isStartingOutfielder) {
+        // Starting outfielder (元外野): hollow diamond.
+        ctx.beginPath();
+        ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath();
+        ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.stroke();
+      } else if (p.zone === ZONE.OUTFIELD) {
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.stroke();
       } else {
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = color; ctx.fill();
         ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1; ctx.stroke();
       }
       if (p.combat && p.combat.hasBall) {
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = MINIMAP.holderRing; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, r + 2.2, 0, Math.PI * 2); ctx.stroke();
       }
     }
   }

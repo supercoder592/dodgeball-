@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------------------------------------------
 // Bear - Aegis Barrier wall (神盾屏障). A 3.2 m energy wall spanning the court width just inside Bear's half of the
-// centre line, projected from a floor emitter rail between two sideline pylons.
+// centre line, projected from a floor emitter rail between two sideline pylons. It ends ON the sidelines (no overhang):
+// the enemy's U outfield arms run right alongside Bear's half and must stay clear.
 //   Gameplay: registered in game.hittables. Enemy live balls -> 'block' (a ripple spreads from the hit point), Bear's
 //   team's balls -> 'pass'. Unblockable balls (Hyperbeam) pierce it (ripple only). Lobs above 3.2 m clear it.
 //   Look: layered hexagonal energy lattice (ShaderMaterial, additive) with a fresnel rim, rising scan sweep, fine
@@ -21,7 +22,7 @@ export const AEGIS_DEFAULTS = Object.freeze({
   height: 3.2,            // m (spec)
   thickness: 0.14,        // m: collision slab
   offset: 0.9,            // m inside Bear's half from the centre line (enemies stay >= 0.35 m on their side)
-  sideOverhang: 0.25,     // m past each sideline
+  sideOverhang: 0,        // m past each sideline (0: the enemy U outfield arms start right there)
   riseTime: 0.35,         // s (scaled)
   solidFrom: 0.35,        // fraction of the rise at which the wall starts blocking
   fadeTime: 0.45,         // real s

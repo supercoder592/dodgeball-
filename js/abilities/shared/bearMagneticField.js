@@ -267,15 +267,18 @@ export class BearMagneticField {
     const speedKmh = ball.speedKmh || (ball.velocity ? ball.velocity.length() * MS_TO_KMH : 0);
     const handsFree = c && !c.hasBall && c.giveBall && o.canAct !== false;
 
+    // An enemy PASS pulled in is an interception (single-ball rule): possession only - rally 0, and Match / HUD see
+    // `intercepted` (no ult, no revive), exactly like a hand catch of a pass in Combat.tryResolveCatch.
+    const intercepted = !!ball.isPass;
     if (handsFree) {
       // Same order as a real catch (Combat.tryResolveCatch): payload reacts, the hand takes it (ends the flight and
-      // runs payload.onEnded), Rally Boost +1.
+      // runs payload.onEnded), Rally Boost +1 (reset for an intercepted pass).
       const rally = ball.rallyCount | 0;
       if (ball.payload && typeof ball.payload.onCaught === 'function') {
         try { ball.payload.onCaught(ball, o, 'normal'); } catch (e) { console.warn('[bear] payload.onCaught threw', e); }
       }
       c.giveBall(ball);
-      ball.setRallyCount?.(RallyMath.next(rally));
+      ball.setRallyCount?.(intercepted ? 0 : RallyMath.next(rally));
     } else {
       // Hands full: the field kills the momentum and drops the ball at his feet.
       planarForward(o, _f);
@@ -291,8 +294,8 @@ export class BearMagneticField {
     o.avatar?.playCatch?.();
     sfx('magnetClunk', _pt, 1, 1.1); // the catch VFX/SFX/juice themselves are driven by EV.BallCaught
     emit(EV.BallCaught, {
-      ball, catcher: o, thrower, quality: 'normal', secondsBeforeImpact: 0, point: _pt.clone(), speedKmh,
-      rallyCount: ball.rallyCount | 0, local: !!o.isLocal,
+      ball, catcher: o, thrower, quality: 'normal', timingQuality: 'normal', secondsBeforeImpact: 0, point: _pt.clone(),
+      speedKmh, rallyCount: ball.rallyCount | 0, local: !!o.isLocal, intercepted, isPass: intercepted,
     });
   }
 

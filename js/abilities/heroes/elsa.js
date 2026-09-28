@@ -6,12 +6,14 @@
 // and pause freeze them; purely visual glitter is view-dependent (no clock). Optional systems (vfx, audio, renderer,
 // juice) are always guarded and a failure there never breaks the gameplay effect.
 // World objects live in ../shared/elsaFrost.js (three.js) and ../shared/elsaFrostMath.js (pure, unit tested).
+// Single-ball rule: Glacier Freeze throws the match ball Elsa is HOLDING as the freezing ball (requiresBall, usable from
+// the outfield); it never conjures a second ball.
 // ---------------------------------------------------------------------------------------------------------------
 import * as THREE from 'three';
 import { game, ORDER } from '../../game.js';
 import { ZONE, TEAM, opponent } from '../../core/constants.js';
 import { AbilityBase, registerAbility, FAIL, INTERRUPT } from '../abilityBase.js';
-import { throwAbilityBall } from '../abilityUtil.js';
+import { throwHeldBall } from '../shared/empowerThrow.js';
 import { IceTrailField, FrostSheen } from '../shared/elsaFrost.js';
 import { TrailStepper, fieldEnvelope } from '../shared/elsaFrostMath.js';
 
@@ -114,7 +116,7 @@ function resolveAimTarget(self, maxDist, coneDeg, nearestFallback) {
  * holds, then melts. The emitter stops the moment the ball stops being live (caught, lands, hits, despawns) or is
  * re-thrown by anybody else. Allies (Elsa included) whose feet are on the ice get Status `haste` 0.2 for
  * `hasteRefresh` s, re-applied while they stay on it (one shared source, so overlapping patches never stack).
- * Passes and ability balls (Glacier Freeze) are thrown balls too, so they lay ice as well.
+ * Passes and empowered throws (Glacier Freeze) are thrown balls too, so they lay ice as well.
  */
 export class ElsaFrostTrail extends AbilityBase {
   static defaults = {
@@ -357,11 +359,12 @@ export class GlacierFreezePayload {
 }
 
 /**
- * Elsa skill [Glacier Freeze] (CD 13 s): conjures and hurls a supercooled ball (style 'freeze', 1.15x a full-charge
- * throw) through the normal throw pipeline (throwAbilityBall: soft-lock / lead targeting, throw modifiers - so Frost
- * Trail lays ice under it - and the BallThrown event). Its GlacierFreezePayload turns a landed hit into a 2.5 s freeze.
- * Target: soft-lock, else the best enemy in the aim cone, else (bots) the nearest enemy. If no ball could be conjured
- * the cooldown is refunded.
+ * Elsa skill [Glacier Freeze] (CD 13 s): the match ball in Elsa's hand is supercooled and hurled as the freezing ball
+ * (style 'freeze', 1.15x a full-charge throw) through the normal throw pipeline (throwHeldBall: soft-lock / lead
+ * targeting, throw modifiers - so Frost Trail lays ice under it - and the BallThrown event that releases the possession
+ * clock). Its GlacierFreezePayload turns a landed hit into a 2.5 s freeze. Needs the ball (roster requiresBall ->
+ * FAIL.REQUIRES_BALL). Target: soft-lock, else the best enemy in the aim cone, else (bots) the nearest enemy. If the
+ * ball left her hand before the release the cooldown is refunded.
  */
 export class ElsaGlacierFreeze extends AbilityBase {
   static defaults = {
@@ -386,19 +389,16 @@ export class ElsaGlacierFreeze extends AbilityBase {
     const o = this.owner;
     const p = this.params;
     const target = resolveAimTarget(o, p.aimRange, p.aimCone, !o.isHuman);
-    const ball = throwAbilityBall(o, {
+    const ball = throwHeldBall(o, {
       style: 'freeze', speedMul: p.speedMul, gravityScale: p.gravityScale, target, payload: new GlacierFreezePayload(this),
     });
     if (!ball) { this._refund = true; return; }
     this.thrown++;
     this.lastBall = ball;
-    const origin = o.combat && o.combat.getThrowOrigin ? _v.copy(o.combat.getThrowOrigin()) : _v.copy(o.position).setY(1.4);
+    // Combat.launchBall already played the throw animation; add the frost burst at the release point.
+    const origin = ball.position ? _v.copy(ball.position) : _v.copy(o.position).setY(1.4);
     fxPlay('iceBurst', origin, { scale: 0.45, color: ELSA_FX.burst });
     sfx('frostCast', origin, 0.9, 1);
-    if (ball.velocity && o.avatar && o.avatar.playThrow) {
-      _dir.copy(ball.velocity).setY(0);
-      if (_dir.lengthSq() > 1e-6) o.avatar.playThrow(_dir.normalize());
-    }
   }
 
   onCooldown() {
@@ -409,13 +409,13 @@ export class ElsaGlacierFreeze extends AbilityBase {
 
   onRoundReset() { this._refund = false; this.lastBall = null; }
 
-  /** Best on a nearby enemy who is not already frozen; better still when Elsa holds a ball for the follow-up hit. */
+  /** Only with the ball in hand (it IS the throw); best on a nearby enemy who is not already frozen. */
   evaluateAI(ctx) {
     const e = ctx && ctx.nearestEnemy;
-    if (!e || !(ctx.nearestEnemyDistance <= this.params.aiRange)) return 0;
-    if (e.status && e.status.has('frozen')) return 0.05;
-    let u = 0.55;
-    if (ctx.holdingBall) u += 0.2;              // freeze now, eliminate with the held ball next
+    if (!e || !ctx.holdingBall || !(ctx.nearestEnemyDistance <= this.params.aiRange)) return 0;
+    if (e.status && e.status.has('frozen')) return 0.05; // a plain throw eliminates a frozen enemy anyway
+    let u = 0.6;
+    if (ctx.teammatesOutfield > 0) u += 0.1;     // an outfielder can finish the frozen enemy off
     if (ctx.nearestEnemyDistance < 10) u += 0.1;
     if (ctx.incomingBall && ctx.incomingTime < 0.5) u -= 0.3; // dodge/catch first
     const w = this.def.aiWeight ?? 0.5;

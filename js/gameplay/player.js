@@ -52,6 +52,7 @@ export function neutralIntent(player, out = null) {
     move: new THREE.Vector3(), aimDir: new THREE.Vector3(0, 0, 1), aimPoint: new THREE.Vector3(), target: null,
     sprint: false, jump: false, slide: false, throwPressed: false, throwHeld: false, throwReleased: false,
     catchPressed: false, pass: false, pickup: false, skill: false, ultimate: false, cycleTarget: false,
+    passTarget: null,
   };
   it.move.set(0, 0, 0);
   const yaw = player && Number.isFinite(player.yaw) ? player.yaw : 0;
@@ -60,6 +61,7 @@ export function neutralIntent(player, out = null) {
   else it.aimPoint.copy(it.aimDir).multiplyScalar(PLAYER_TUNING.aimPointDistance);
   it.aimPoint.y += 1.3;
   it.target = null;
+  it.passTarget = null;
   it.sprint = it.jump = it.slide = false;
   it.throwPressed = it.throwHeld = it.throwReleased = false;
   it.catchPressed = it.pass = it.pickup = it.skill = it.ultimate = it.cycleTarget = false;
@@ -83,6 +85,8 @@ export class Player {
     this.isLocal = !!isLocal;
     this.intentSource = intentSource;
     this.zone = ZONE.INFIELD;
+    /** Starting outfielder (元外野): stays in the outfield for the whole round (set by Match after construction). */
+    this.isStartingOutfielder = false;
     /** Set by Match during countdowns / breaks and while ragdolling: commands are ignored. */
     this.inputLocked = false;
 
@@ -265,8 +269,11 @@ export class Player {
     if (this.zone === ZONE.OUTFIELD) this._releaseEliminationLock();
   }
 
-  /** New round: everything back to a fresh, standing, infield player at `pos` facing `yaw`. */
-  resetForRound(pos, yaw) {
+  /**
+   * New round: everything back to a fresh, standing player at `pos` facing `yaw`, in `zone` (the starting outfielder
+   * begins the round in the outfield).
+   */
+  resetForRound(pos, yaw, zone = ZONE.INFIELD) {
     // Effects first: removing 'frozen' releases its incapacitation; passive markers (silentFootsteps) stay.
     this._call(this.status, 'clearForReset');
     this._call(this.combat, 'resetForRound');
@@ -283,7 +290,8 @@ export class Player {
       m.control = 1;
     }
     this.teleport(pos, yaw);
-    this.setZone(ZONE.INFIELD);
+    this.setZone(zone === ZONE.OUTFIELD ? ZONE.OUTFIELD : ZONE.INFIELD);
+    this._releaseEliminationLock();
     this.intent = neutralIntent(this, this.intent);
   }
 
@@ -333,6 +341,9 @@ export class Player {
     it.sprint = !!src.sprint; it.jump = !!src.jump; it.slide = !!src.slide;
     it.throwPressed = !!src.throwPressed; it.throwHeld = !!src.throwHeld; it.throwReleased = !!src.throwReleased;
     it.catchPressed = !!src.catchPressed; it.pass = !!src.pass; it.pickup = !!src.pickup;
+    // Explicit pass receiver (bots): only a teammate is accepted.
+    const pt = src.passTarget;
+    it.passTarget = pt && pt !== this && pt.team === this.team ? pt : null;
     it.skill = !!src.skill; it.ultimate = !!src.ultimate; it.cycleTarget = !!src.cycleTarget;
   }
 

@@ -134,6 +134,13 @@ export class Audio {
     on(EV.RoundCountdown, (e) => { if (e && e.secondsLeft > 0) this.play2D('beep', 1, 1); });
     on(EV.RoundStarted, () => { this.play2D('whistle', 1, 1); this._excite = Math.min(1, this._excite + 0.4); });
     on(EV.RoundEnded, (e) => this._onRoundEnded(e));
+    // Single-ball possession: referee whistle on a shot-clock violation / out-of-play award, beeps for the local 3-2-1.
+    on(EV.PossessionViolation, () => { this.play2D('whistle', 1, 0.95); this._crowd('crowdOoh', 0.5, 0.3); });
+    on(EV.BallAwarded, (e) => { if (e && e.cause === 'outOfArena') this.play2D('whistle', 1, 0.95); });
+    on(EV.PossessionWarning, (e) => {
+      const lp = game.localPlayer;
+      if (e && lp && e.team === lp.team) this.play2D('beep', 0.6, 1 + 0.1 * (3 - (e.secondsLeft | 0)));
+    });
     on(EV.MatchEnded, () => { this.play2D('whistleLong', 1, 1.02); this._crowd('crowdCheer', 1, 1, true); this._crowd('applause', 0.9, 0, true); });
     on(EV.MatchStarted, () => { this._startAmbience(); this._excite = 0.3; });
     on(EV.MatchPhase, (e) => { if (e && e.current) this._crowdBase = AUDIO_TUNING.crowd[e.current] ?? AUDIO_TUNING.crowd.playing; });

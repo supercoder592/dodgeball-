@@ -132,7 +132,7 @@ export class ShadowClone {
     _dir.set(_vel.x, 0, _vel.z);
     if (_dir.lengthSq() > 1e-6) _dir.normalize();
     this.visual?.playThrow?.(_dir);
-    spawnIllusionBall(_origin, _vel, gravityScale, lifetime);
+    spawnIllusionBall(_origin, _vel, gravityScale, lifetime, this.mimic);
   }
 
   /** Mirrors a catch attempt (the clone's animation otherwise mirrors the mimic's pose). */
@@ -412,9 +412,12 @@ function illusionBallLook() {
 
 /**
  * Launches a harmless illusion ball (visual only) at `origin` with `velocity`; it follows gravity x `gravityScale` and
- * vanishes in a puff after `lifetime` seconds or on reaching the floor.
+ * vanishes in a puff after `lifetime` seconds, on reaching the floor, or the moment it touches anything solid: any
+ * player's body (except `owner`, the real Shadow it mirrors), any game.hittables object (clones, shields, turrets -
+ * intersect() only, never onBallHit) or an arena collider. Single-ball rule: it never reads as a second real ball -
+ * it cannot hit, be caught or picked up, and it never flies through bodies or walls.
  */
-export function spawnIllusionBall(origin, velocity, gravityScale = 0.65, lifetime = 0.6) {
+export function spawnIllusionBall(origin, velocity, gravityScale = 0.65, lifetime = 0.6, owner = null) {
   if (!game.scene) return null;
   ensureShadowSystem();
   let item = _illusionPool.pop();
@@ -424,7 +427,7 @@ export function spawnIllusionBall(origin, velocity, gravityScale = 0.65, lifetim
     const mesh = new THREE.Mesh(look.geometry, look.material);
     mesh.castShadow = true;
     mesh.name = 'ShadowIllusionBall';
-    item = { mesh, velocity: new THREE.Vector3(), gravity: 0, remaining: 0, spin: 0, axis: new THREE.Vector3(1, 0, 0) };
+    item = { mesh, velocity: new THREE.Vector3(), gravity: 0, remaining: 0, age: 0, owner: null, spin: 0, axis: new THREE.Vector3(1, 0, 0) };
   } else {
     item.mesh.geometry = look.geometry;
     item.mesh.material = look.material;
@@ -435,6 +438,8 @@ export function spawnIllusionBall(origin, velocity, gravityScale = 0.65, lifetim
   item.velocity.copy(velocity);
   item.gravity = GRAVITY * Math.max(0, gravityScale);
   item.remaining = Math.max(0.05, lifetime);
+  item.age = 0;
+  item.owner = owner || null;
   // Backspin-free realistic roll: spin axis perpendicular to the flight, rate = speed / radius.
   item.axis.set(velocity.z, 0, -velocity.x);
   if (item.axis.lengthSq() < 1e-6) item.axis.set(1, 0, 0);
@@ -450,8 +455,51 @@ function vanishIllusion(i, effects) {
   _illusionLive.splice(i, 1);
   if (effects) game.vfx?.play?.('cloneDissolve', item.mesh.position, { scale: SHADOW_CLONE_TUNING.illusionBallVanishScale, color: SHADOW_CLONE_TUNING.dissolveColor });
   item.mesh.visible = false;
+  item.owner = null;
   if (item.mesh.parent) item.mesh.parent.remove(item.mesh);
   if (_illusionPool.length < ILLUSION_POOL_MAX) _illusionPool.push(item);
+}
+
+/** Grace (s) after the release before contacts count (the ball leaves a clone's hand next to bodies). */
+const ILLUSION_CONTACT_GRACE = 0.04;
+const _illFrom = new THREE.Vector3();
+const _illPoint = new THREE.Vector3();
+const _illNormal = new THREE.Vector3();
+
+/** Does the illusion's step from `from` to `to` touch a player body, a hittable or an arena collider? Allocation-free. */
+function illusionTouchesSolid(from, to, owner) {
+  const players = game.players;
+  if (players) {
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (!p || p === owner || !p.position) continue;
+      if (p.health && p.health.isAlive === false) continue;
+      const r = (p.radius || 0.35) + BALL_RADIUS;
+      const y0 = p.position.y + r, y1 = p.position.y + Math.max(r, (p.height || 1.8) - r);
+      if (segmentVsVerticalCapsule(from, to, p.position, y0, y1, r, _illPoint, _illNormal) >= 0) return true;
+    }
+  }
+  const hittables = game.hittables;
+  if (hittables && typeof hittables.forEach === 'function') {
+    let hit = false;
+    for (const h of hittables) {
+      if (!h || typeof h.intersect !== 'function') continue;
+      try { if (h.intersect(from, to, BALL_RADIUS)) { hit = true; break; } } catch (e) { /* a broken hittable never stops the illusion */ }
+    }
+    if (hit) return true;
+  }
+  const cols = game.arena && game.arena.colliders;
+  if (cols && cols.length) {
+    for (let i = 0; i < cols.length; i++) {
+      const c = cols[i];
+      const b = c && (c.box || c.aabb || c);
+      const mn = b && b.min, mx = b && b.max;
+      if (!mn || !mx || !Number.isFinite(mn.x)) continue;
+      if (to.x > mn.x - BALL_RADIUS && to.x < mx.x + BALL_RADIUS && to.y > mn.y - BALL_RADIUS && to.y < mx.y + BALL_RADIUS &&
+          to.z > mn.z - BALL_RADIUS && to.z < mx.z + BALL_RADIUS) return true;
+    }
+  }
+  return false;
 }
 
 function updateIllusionBalls(dt) {
@@ -460,10 +508,13 @@ function updateIllusionBalls(dt) {
   for (let i = _illusionLive.length - 1; i >= 0; i--) {
     const it = _illusionLive[i];
     it.remaining -= dt;
+    it.age += dt;
+    _illFrom.copy(it.mesh.position);
     it.velocity.y -= it.gravity * dt;
     it.mesh.position.addScaledVector(it.velocity, dt);
     it.mesh.rotateOnWorldAxis(it.axis, it.spin * dt);
-    if (it.remaining <= 0 || it.mesh.position.y <= floorY + BALL_RADIUS) vanishIllusion(i, true);
+    if (it.remaining <= 0 || it.mesh.position.y <= floorY + BALL_RADIUS) { vanishIllusion(i, true); continue; }
+    if (it.age > ILLUSION_CONTACT_GRACE && illusionTouchesSolid(_illFrom, it.mesh.position, it.owner)) vanishIllusion(i, true);
   }
 }
 

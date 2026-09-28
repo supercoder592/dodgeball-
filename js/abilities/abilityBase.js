@@ -180,7 +180,11 @@ export class AbilityBase {
   onEnd(interrupted) {}
   onRoundReset() {}
 
-  /** AI utility 0..1 (default from aiHint). ctx: see ai/bot.js buildAbilityContext(). */
+  /**
+   * AI utility 0..1 (default from aiHint). ctx: see ai/bot.js buildAbilityContext() (single-ball fields: holdingBall,
+   * teamHasBall, enemyHasBall, ballInOwnZone, teammatesOutfield incl. the starting outfielder,
+   * eliminatedTeammatesOutfield).
+   */
   evaluateAI(ctx) {
     const w = this.def.aiWeight ?? 0.5;
     switch (this.def.aiHint) {
@@ -189,7 +193,8 @@ export class AbilityBase {
       case AI_HINT.HOLDING_BALL: return ctx.holdingBall && ctx.nearestEnemy ? w : 0;
       case AI_HINT.THREATENED: return ctx.incomingBall && ctx.incomingTime < 0.6 ? w : 0;
       case AI_HINT.ENEMY_IN_RANGE: return ctx.nearestEnemy && ctx.nearestEnemyDistance < 8 ? w : 0;
-      case AI_HINT.TEAMMATE_OUTFIELD: return ctx.teammatesOutfield > 0 ? w : 0;
+      // Eliminated teammates only: the starting outfielder is always out there and is never revived.
+      case AI_HINT.TEAMMATE_OUTFIELD: return (ctx.eliminatedTeammatesOutfield ?? ctx.teammatesOutfield) > 0 ? w : 0;
       case AI_HINT.BALLS_LOOSE: return ctx.freeBallsNearby > 0 && !ctx.holdingBall ? w : 0;
       case AI_HINT.LOSING: return ctx.alliesInfield < ctx.enemiesInfield ? w : 0;
       default: return 0;

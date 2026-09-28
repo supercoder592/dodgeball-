@@ -15,6 +15,11 @@ export class AbilityController {
     this.meter = new Meter(1, 0);
     /** Ultimate charge per second while infield in a live round (0..1 scale). */
     this.passiveUltPerSecond = 0.008;
+    /**
+     * Share of that trickle a STARTING outfielder (元外野, out there all round and never targetable) still earns, so the
+     * permanent outfielder can reach an ultimate too. Eliminated outfielders earn none (they get back in by a hit).
+     */
+    this.starterUltShare = 0.5;
     /** Charge value carried by the last EV.UltCharge event (passive gains are throttled against it). */
     this._announced = 0;
     this.passive = null; this.skill = null; this.ultimate = null;
@@ -61,8 +66,10 @@ export class AbilityController {
 
   update(dt) {
     const live = !game.match || game.match.isPlaying;
-    if (live && this.owner.zone === ZONE.INFIELD && !this.meter.full && this.passiveUltPerSecond > 0) {
-      this.addUltimateCharge(this.passiveUltPerSecond * dt, 'passive');
+    if (live && !this.meter.full && this.passiveUltPerSecond > 0) {
+      const o = this.owner;
+      const share = o.zone === ZONE.INFIELD ? 1 : o.isStartingOutfielder ? this.starterUltShare : 0;
+      if (share > 0) this.addUltimateCharge(this.passiveUltPerSecond * share * dt, 'passive');
     }
     for (const a of this.all) a.tick(dt);
   }
