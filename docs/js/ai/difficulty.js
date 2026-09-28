@@ -100,7 +100,7 @@ export const BOT_DIFFICULTY = Object.freeze({
     aimErrorDeg: 2.2, leadAccuracy: 0.93, throwHesitationMin: 0.2, throwHesitationMax: 0.5, opportunismSkill: 0.6,
     targetSelectionSkill: 0.85, passChance: 0.50, strafeAmplitude: 1.3,
     interceptChance: 0.50, possessionSafety: 1.3, flankSkill: 0.85, serveHoldMin: 0.4, serveHoldMax: 0.9,
-    catchAttemptProbability: 0.6, catchTimingSigma: 0.05, dodgeSkill: 0.75, maneuverTimingSigma: 0.045,
+    catchAttemptProbability: 0.6, catchTimingSigma: 0.07, dodgeSkill: 0.75, maneuverTimingSigma: 0.045,
     abilityUsageFactor: 1.0, abilityRetryInterval: 1.2, abilityFailBackoff: 3.5,
     preferredDepth: 4.5, holderAvoidDistance: 9, teammateSpacing: 3.2,
   }),
