@@ -24,6 +24,13 @@ import './abilities/heroes/index.js';
 const params = new URLSearchParams(location.search);
 const flag = (k) => params.get(k) === '1' || params.get(k) === 'true';
 
+/**
+ * Boot phase marker: a 'du:boot:<phase>' User Timing mark at the END of each boot phase (read by
+ * Tools/web/loadprobe.mjs and the DevTools performance panel). A handful per page load - no measurable cost.
+ * @param {string} phase
+ */
+const mark = (phase) => { if (typeof performance !== 'undefined' && performance.mark) performance.mark('du:boot:' + phase); };
+
 function detectQuality() {
   const q = params.get('quality');
   if (q === 'low' || q === 'medium' || q === 'high') return q;
@@ -44,6 +51,7 @@ export function buildSetup({ localHero, localTeam = TEAM.HOME, difficulty = 'nor
 }
 
 async function boot() {
+  mark('modules'); // module graph fetched + evaluated
   const seed = Number(params.get('seed')) || (Date.now() % 100000);
   game.rng = new Rng(seed);
   game.config = {
@@ -61,11 +69,13 @@ async function boot() {
     game.renderer = new Renderer(container, game.config.quality);
     game.scene = game.renderer.scene;
     game.camera = game.renderer.camera;
+    mark('renderer');
 
     game.assets = new Assets(game.renderer.three);
     game.assets.onProgress = (loaded, total, label) => Loading.progress(loaded, total, label);
     await game.assets.loadManifest();
     game.roster = HEROES;
+    mark('manifest');
 
     game.physics = new Physics();
     game.addSystem(game.physics, ORDER.PHYSICS);
@@ -73,6 +83,7 @@ async function boot() {
     game.arena = new Arena();
     await game.arena.build(game.scene);
     game.court = game.arena.court;
+    mark('arena');
 
     game.input = game.addSystem(new Input(), ORDER.INPUT);
     game.cameraRig = game.addSystem(new CameraRig(), ORDER.CAMERA);
@@ -85,6 +96,7 @@ async function boot() {
     for (const sys of [game.input, game.cameraRig, game.juice, game.vfx, game.audio, game.balls, game.match, game.hud]) {
       if (sys.init) await sys.init();
     }
+    mark('systems');
 
     // Preload every hero model + both animation sets so matches start instantly.
     const loads = [];
@@ -95,8 +107,11 @@ async function boot() {
     }
     for (const g of ['m', 'f']) for (const key of Object.keys(game.assets.manifest.clips[g] || {})) loads.push(game.assets.clip(g, key));
     await Promise.all(loads);
+    mark('preload');
 
     game.start();
+    // Queued after the kernel loop's first callback: marks the end of the first rendered frame (shader compiles).
+    requestAnimationFrame(() => mark('firstFrame'));
     Loading.hide();
 
     const difficulty = params.get('difficulty') || 'normal';
@@ -107,6 +122,7 @@ async function boot() {
     } else {
       showHeroSelect();
     }
+    mark('ready');
     window.__DU.ready = true;
   } catch (e) {
     console.error('[boot] failed', e);
