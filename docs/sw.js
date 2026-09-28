@@ -43,8 +43,32 @@ function relOf(url) {
 /** Fetch that revalidates with the server (skips a possibly stale HTTP cache entry; a 304 is cheap). */
 const fresh = (rel) => fetch(keyOf(rel), { cache: 'no-cache', credentials: 'same-origin' });
 
-/** Client ids of pages running another deploy's build (see header). Lost if the worker stops: harmless (next nav). */
+/**
+ * Client ids of pages running another deploy's build (see header). Mirrored into this deploy's cache (FOREIGN entry)
+ * because the browser may stop and restart an idle worker while such a page is still open.
+ */
 const foreign = new Set();
+const FOREIGN = '__du_foreign.json';
+const FOREIGN_MAX = 16;
+let foreignLoaded = null;
+/** @returns {Promise<void>} resolves once the persisted foreign ids are in `foreign` (read once per worker start) */
+function loadForeign() {
+  if (!foreignLoaded) {
+    foreignLoaded = caches.open(CACHE).then((c) => c.match(keyOf(FOREIGN)))
+      .then((r) => (r ? r.json() : []))
+      .then((ids) => { for (const id of ids) foreign.add(id); }, () => undefined);
+  }
+  return foreignLoaded;
+}
+/** @param {string} id @param {boolean} on */
+async function markForeign(id, on) {
+  await loadForeign();
+  if (on === foreign.has(id)) return;
+  if (on) foreign.add(id); else foreign.delete(id);
+  const ids = [...foreign].slice(-FOREIGN_MAX);
+  const c = await caches.open(CACHE);
+  await c.put(keyOf(FOREIGN), new Response(JSON.stringify(ids), { headers: { 'content-type': 'application/json' } }));
+}
 /** @param {string} html @returns {boolean} true when the page is stamped with a build other than this worker's */
 const otherBuild = (html) => {
   const m = /data-du-build="([^"]*)"/.exec(html);
@@ -111,17 +135,23 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(navigate(req, rel, event.resultingClientId));
     return;
   }
-  if (!DEV && event.clientId && foreign.has(event.clientId)) {
-    if (rel !== 'sw.js') event.respondWith(fetch(req, { cache: 'no-cache' }));
-    return;
-  }
-  if (!DEV && req.mode !== 'navigate' && Object.prototype.hasOwnProperty.call(HASHES, rel)) {
-    event.respondWith(cacheFirst(rel));
-    return;
-  }
   if (rel === 'sw.js') return;
-  event.respondWith(networkFirst(req, rel));
+  event.respondWith(route(req, rel, event.clientId));
 });
+
+/**
+ * Subresources: another build's page goes to the network (revalidated, nothing stored), hashed files are cache-first,
+ * everything else network-first.
+ * @param {Request} req @param {string} rel @param {string} [clientId] @returns {Promise<Response>}
+ */
+async function route(req, rel, clientId) {
+  if (!DEV && clientId) {
+    await loadForeign();
+    if (foreign.has(clientId)) return fetch(req, { cache: 'no-cache' });
+  }
+  if (!DEV && Object.prototype.hasOwnProperty.call(HASHES, rel)) return cacheFirst(rel);
+  return networkFirst(req, rel);
+}
 
 /** @param {string} rel @returns {Promise<Response>} */
 async function cacheFirst(rel) {
@@ -153,7 +183,7 @@ async function navigate(req, rel, clientId) {
   if ((res.headers.get('content-type') || '').includes('text/html')) {
     try { other = otherBuild(await res.clone().text()); } catch (e) { /* unreadable body: treat as this build */ }
   }
-  if (clientId) { if (other) foreign.add(clientId); else foreign.delete(clientId); }
+  if (clientId) await markForeign(clientId, other).catch(() => undefined);
   // Another build's page is never stored here: the offline fallback must name files this cache holds.
   if (!other) (await caches.open(CACHE)).put(keyOf(rel), res.clone()).catch(() => undefined);
   return res;

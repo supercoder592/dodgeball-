@@ -261,7 +261,10 @@ BallManager, Match, Hud) → the 10 hero-select portraits → `game.start()` →
 in the background (one hero per idle callback: GLB + clips parsed, maps only HTTP-cached). Every match start (PLAY,
 watch AI, autoplay) goes through `launchMatch(setup)`: loading screen with the line-up → exactly the line-up's
 models / maps / clips → `Match.startMatch` → shader warm-up (compile(Async) + real frames, preRound clock frozen) →
-countdown. URL params: `seed`, `quality`, `hero`, `team`, `difficulty`, `debug`, `norender`, `sw` (0/1).
+countdown. `Assets` never caches a failure (a failed GLB / map is requested again by the next caller); the match load
+retries a failed file once, and when nothing progresses for 40 s it shows `Loading.error` with Back / Reload instead of
+waiting forever. WATCH AI keeps prefetching the rest of the roster while spectating (the attract loop restarts via
+`Match.startMatch` with a random line-up). URL params: `seed`, `quality`, `hero`, `team`, `difficulty`, `debug`, `norender`, `sw` (0/1).
 `window.__DU = { ready, game, stats(), loader() }` is used by the smoke test, the load probe and the service-worker
 reload check in index.html (`loader().launching`, `#hero-select.open`: keep these names).
 Each boot phase ends with a `performance.mark('du:boot:<phase>')` (`modules renderer manifest arena systems preload
@@ -293,8 +296,11 @@ falls back to a runtime bake after boot).
 ## 7. Deploy (`Tools/web/deploy_pages.sh`)
 The deployed site is built from a copy of docs/: `bundle.mjs` (esbuild) packs js/main.js + three + cannon-es into one
 minified `bundle/<hash>/main.js` (+ the synth worker), `build_site.mjs` rewrites index.html (import map and
-`js/main.js` tag → bundle, modulepreload / preload hints) and fills sw.js (cache-first for every hashed file, one
-cache per deploy, unchanged files carried over). `deploy_pages.sh --dry-run <dir>` builds the same site without git;
+`js/main.js` tag → bundle, modulepreload / preload hints, `<html data-du-build="<VERSION>">`) and fills sw.js
+(cache-first for every hashed file, one cache per deploy, unchanged files carried over). A page stamped with another
+build than the controlling worker's bypasses that worker's cache (no mixed deploys), and index.html reloads on a
+worker update only when the new worker's VERSION (`'du:version'` message) differs from the page's build.
+`deploy_pages.sh --dry-run <dir>` builds the same site without git;
 test it with `smoke.mjs --root <dir>`, `DU_ROOT=<dir> audit.mjs` / `loadprobe.mjs --query "seed=7&sw=1"`.
 Source constraints: dynamic imports literal (or `import(CONST)` of a same-file string constant), workers as
 `new URL('./x.js', import.meta.url)`, every bare specifier in the import map of docs/index.html.

@@ -109,7 +109,7 @@ class HeroSelectScreen {
     this.index = i;
     this._render();
   }
-  _setTeam(t) { this.team = t; this._render(); this._save(); }
+  _setTeam(t) { this.team = t === TEAM.AWAY ? TEAM.AWAY : TEAM.HOME; this._render(); this._save(); }
   _setDifficulty(d) { this.difficulty = d; this._render(); this._save(); }
   _stepDifficulty(dir) {
     const i = DIFFICULTIES.findIndex((d) => d.id === this.difficulty);
@@ -228,7 +228,7 @@ class HeroSelectScreen {
       root.addEventListener('click', (e) => {
         const card = e.target.closest('.hs-card');
         if (card) { this._select(Number(card.dataset.i)); return; }
-        const t = e.target.closest('[data-team]');
+        const t = e.target.closest('button[data-team]'); // the root also carries data-team (current team)
         if (t) { this._setTeam(Number(t.dataset.team)); return; }
         const d = e.target.closest('[data-diff]');
         if (d) { this._setDifficulty(d.dataset.diff); return; }

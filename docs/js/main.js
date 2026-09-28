@@ -288,6 +288,7 @@ async function launchMatch(setup) {
       _launching = false;
       for (const path of stalled) game.assets.forget(path);
       console.warn('[boot] match load stalled', stalled);
+      if (game.input) game.input.releaseLock(); // PLAY locked the mouse: the buttons must be clickable
       Loading.error(`${stalled.length} file(s) did not finish downloading · ${stalled.length} 個檔案未能下載完成`, {
         title: 'Download stalled · 下載停滯',
         hint: 'Check your connection, then go back and try again. 請檢查網路連線，返回後再試一次。',
@@ -368,19 +369,22 @@ function nextPrefetch() {
   return null;
 }
 
+/** Waits for a background load, but never longer than LOAD.stallTimeoutMs (a stalled request must not end the queue). */
+const settledOrStalled = (p) => Promise.race([p.catch(() => null), wait(LOAD.stallTimeoutMs)]);
+
 /** Prefetches one hero: parses its model and its gender's clips, warms the HTTP cache for its maps. */
 async function prefetchHero(id) {
   const a = game.assets, def = heroDef(id);
   if (!def) return;
-  await a.gltf(def.folder + def.model).catch(() => null);
+  await settledOrStalled(a.gltf(def.folder + def.model));
   const g = genderOf(def);
   for (const key of clipKeys(g)) {
     if (!canPrefetch()) break;
-    await a.gltf(a.manifest.clips[g][key].file).catch(() => null);
+    await settledOrStalled(a.gltf(a.manifest.clips[g][key].file));
   }
   for (const [path] of heroTextures(id)) {
     if (!canPrefetch()) break;
-    await a.prefetch(path);
+    await settledOrStalled(a.prefetch(path));
   }
 }
 
