@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ActionState, SRC, radialDeadzone, axisCurve, clampMagnitude2, triggerHysteresis, RepeatNav, keyAxes,
+  TOUCH_PRIMARY, touchPrimaryMode, DODGE, dodgeGesture, dodgeAction, isTap, ballApproaches,
 } from './inputMath.js';
 
 test('ActionState: press and release inside one frame still reports both edges', () => {
@@ -97,4 +98,54 @@ test('RepeatNav fires immediately, after the delay, then at the interval', () =>
   assert.ok(fired >= 3 && fired <= 4, `fired ${fired}`);
   assert.equal(r.update(false, 0.01), false);
   assert.equal(r.update(true, 0.01), true);
+});
+
+test('touchPrimaryMode: throw with the ball, pickup only when nothing is incoming, catch otherwise', () => {
+  assert.equal(touchPrimaryMode(true, true, true), TOUCH_PRIMARY.THROW);
+  assert.equal(touchPrimaryMode(true, false, false), TOUCH_PRIMARY.THROW);
+  assert.equal(touchPrimaryMode(false, true, false), TOUCH_PRIMARY.PICKUP);
+  assert.equal(touchPrimaryMode(false, true, true), TOUCH_PRIMARY.CATCH);
+  assert.equal(touchPrimaryMode(false, false, false), TOUCH_PRIMARY.CATCH);
+});
+
+test('dodgeGesture: still = jump now, moving = slide on tap / after the wait, swipe up = jump', () => {
+  assert.equal(dodgeGesture(false, 0, 0, 0, false), DODGE.JUMP);
+  assert.equal(dodgeGesture(true, 0, 0, 20, false), DODGE.NONE);
+  assert.equal(dodgeGesture(true, 2, 3, 60, true), DODGE.SLIDE, 'tap while moving');
+  assert.equal(dodgeGesture(true, 0, 0, 110, false), DODGE.SLIDE, 'held past the wait');
+  assert.equal(dodgeGesture(true, 4, -20, 50, false), DODGE.JUMP, 'quick upward swipe');
+  assert.equal(dodgeGesture(true, 30, -20, 50, false), DODGE.NONE, 'mostly sideways is not a swipe up');
+  assert.equal(dodgeGesture(true, 0, 20, 50, false), DODGE.NONE, 'downward drag is not a swipe up');
+});
+
+test('dodgeAction: slide only when the state machine would start one, otherwise jump', () => {
+  assert.equal(dodgeAction(false, 'grounded', true, 5, 2.76), DODGE.JUMP, 'standing-still gesture');
+  assert.equal(dodgeAction(true, 'grounded', true, 4.6, 2.76), DODGE.SLIDE, 'walking fast enough');
+  assert.equal(dodgeAction(true, 'grounded', true, 1.2, 2.76), DODGE.JUMP, 'too slow to slide');
+  assert.equal(dodgeAction(true, 'sprinting', true, 0.5, 2.76), DODGE.SLIDE, 'sprint slides at any speed');
+  assert.equal(dodgeAction(true, 'sprinting', false, 7, 2.76), DODGE.JUMP, 'slide cooldown');
+  assert.equal(dodgeAction(true, 'grounded', false, 5, 2.76), DODGE.JUMP, 'slide cooldown');
+  assert.equal(dodgeAction(true, 'chargingThrow', true, 2.76, 2.76), DODGE.JUMP, 'wind-up -> jump throw');
+  assert.equal(dodgeAction(true, 'airborne', false, 5, 2.76), DODGE.JUMP);
+  assert.equal(dodgeAction(true, 'catching', true, 3, 2.76), DODGE.JUMP);
+});
+
+test('isTap: short and still', () => {
+  assert.equal(isTap(120, 4), true);
+  assert.equal(isTap(260, 4), false);
+  assert.equal(isTap(120, 20), false);
+  assert.equal(isTap(220, 12), true);
+});
+
+test('ballApproaches: closest approach within radius and horizon, never when moving away', () => {
+  // Ball 10 m in front, flying straight at the player at 20 m/s.
+  assert.equal(ballApproaches(0, 0, 0, 10, 0, -20, 2, 1.5), true);
+  // Same ball flying away.
+  assert.equal(ballApproaches(0, 0, 0, 10, 0, 20, 2, 1.5), false);
+  // Passing 4 m to the side.
+  assert.equal(ballApproaches(0, 0, 4, 10, 0, -20, 2, 1.5), false);
+  // Too far away for the horizon (40 m at 20 m/s = 2 s).
+  assert.equal(ballApproaches(0, 0, 0, 40, 0, -20, 2, 1.5), false);
+  // A resting ball never approaches.
+  assert.equal(ballApproaches(0, 0, 0, 1, 0, 0, 2, 1.5), false);
 });

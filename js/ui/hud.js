@@ -6,7 +6,8 @@
 //              projected over combat.currentTarget, pass-receiver marker, off-screen ball pointer, local 3-2-1
 //              possession countdown, round countdown numbers, banners (serve, time violation), toasts, Danger Sense
 //   bottom   : player card (portrait, HP with 'PENDING' delayed elimination, ultimate meter, status chips, zone),
-//              skill / ultimate radial cooldowns with key hints, last throw km/h + rally, pickup prompt,
+//              skill / ultimate radial cooldowns with key hints (touch: fed to the touch buttons), last throw km/h +
+//              rally, pickup prompt (not on touch: the primary touch button shows 撿球),
 //              spectator overlay, click-to-play hint, match results panel
 // Event driven (EV.*) + polled state, UNSCALED time (realDt). DOM writes only happen when a value changes
 // (per-element caches), no per-frame allocations in the steady state.
@@ -971,8 +972,11 @@ export class Hud {
   _scanPickup(local) {
     const e = this.el;
     const combat = local && local.combat;
+    // Touch in use: the primary button itself turns into 撿球 (and walking onto the ball picks it up) - no extra
+    // prompt. A keyboard / pad player with the touch overlay still on screen gets the normal [E] prompt.
+    const touchUi = !!(game.input && game.input.touchActive);
     let show = false;
-    if (combat && !combat.hasBall && game.balls && !(local.fsm && local.fsm.incapReason) && game.match && game.match.isPlaying) {
+    if (!touchUi && combat && !combat.hasBall && game.balls && !(local.fsm && local.fsm.incapReason) && game.match && game.match.isPlaying) {
       const r = (combat.profile && combat.profile.manualPickupRadius) || 1.6;
       let ball = null;
       try {

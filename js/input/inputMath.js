@@ -7,6 +7,9 @@
 //  * radialDeadzone / axisCurve - analogue stick shaping (deadzone rescale + exponential response curve).
 //  * RepeatNav    - menu navigation auto-repeat (initial delay, then a fixed rate) for held d-pad / stick directions.
 //  * triggerHysteresis - analogue trigger -> digital button with hysteresis (no chatter around the threshold).
+//  * touch helpers - context mode of the primary touch button, the 閃避 (dodge) gesture and what it sends, look-zone
+//                   taps and the "is an enemy ball coming at me" test behind the primary button's pickup / catch
+//                   choice.
 // ---------------------------------------------------------------------------------------------------------------
 
 /** W3C "standard" gamepad mapping button indices. */
@@ -132,4 +135,71 @@ export function keyAxes(fwd, back, left, right, out) {
   out.y = (fwd ? 1 : 0) - (back ? 1 : 0);
   if (out.x !== 0 && out.y !== 0) { out.x *= Math.SQRT1_2; out.y *= Math.SQRT1_2; }
   return out;
+}
+
+// ------------------------------------------------------------------ touch helpers
+/** What the big context button of the touch layout does (its label / colour follow the mode). */
+export const TOUCH_PRIMARY = Object.freeze({ THROW: 'throw', PICKUP: 'pickup', CATCH: 'catch' });
+
+/**
+ * Primary touch button mode: holding the ball -> THROW; a loose ball within manual pickup reach and no enemy ball
+ * coming at the player -> PICKUP; otherwise CATCH.
+ */
+export function touchPrimaryMode(hasBall, ballInReach, threatened) {
+  if (hasBall) return TOUCH_PRIMARY.THROW;
+  return ballInReach && !threatened ? TOUCH_PRIMARY.PICKUP : TOUCH_PRIMARY.CATCH;
+}
+
+/** Outcome of a 閃避 (dodge) touch gesture; NONE while it is still undecided. */
+export const DODGE = Object.freeze({ NONE: '', JUMP: 'jump', SLIDE: 'slide' });
+
+/**
+ * 閃避 gesture: a quick upward swipe that starts on the button always jumps; pressed while standing still -> jump at
+ * once; pressed while moving -> slide on release (a tap) or once `decideMs` passed without an upward swipe.
+ * @param {boolean} moving stick deflected past the dodge threshold when the button went down
+ * @param {number} dx px travelled to the right since the press
+ * @param {number} dy px travelled down since the press (screen y; an upward swipe is negative)
+ * @param {number} elapsedMs since the press
+ * @param {boolean} released the finger lifted
+ * @returns {string} DODGE value
+ */
+export function dodgeGesture(moving, dx, dy, elapsedMs, released, swipePx = 16, decideMs = 110) {
+  if (-dy >= swipePx && -dy >= Math.abs(dx)) return DODGE.JUMP;
+  if (!moving) return DODGE.JUMP;
+  if (released || elapsedMs >= decideMs) return DODGE.SLIDE;
+  return DODGE.NONE;
+}
+
+/**
+ * What a resolved 閃避 actually sends: a slide only when the player state machine would start one - locomotion
+ * state 'grounded' (at least `minSlideSpeed` m/s) or 'sprinting', with the motor able to slide (grounded, off the
+ * slide cooldown: motor.canSlide). Anything else jumps: a throw wind-up turns it into a jump throw, and a slow walk
+ * or a slide cooldown never leaves the button dead.
+ * @param {boolean} wantSlide the gesture asked for a slide (dodgeGesture -> SLIDE)
+ * @param {string} fsmState player.fsm.current
+ * @returns {string} DODGE.SLIDE or DODGE.JUMP
+ */
+export function dodgeAction(wantSlide, fsmState, canSlide, planarSpeed, minSlideSpeed) {
+  if (!wantSlide || !canSlide) return DODGE.JUMP;
+  if (fsmState === 'sprinting') return DODGE.SLIDE;
+  return fsmState === 'grounded' && planarSpeed >= minSlideSpeed ? DODGE.SLIDE : DODGE.JUMP;
+}
+
+/** A short tap (not a drag): released within `maxMs` and never farther than `maxPx` from where it went down. */
+export function isTap(durationMs, travelPx, maxMs = 220, maxPx = 12) {
+  return durationMs >= 0 && durationMs <= maxMs && travelPx <= maxPx;
+}
+
+/**
+ * Planar closest approach: does a ball at (bx, bz) moving with (vx, vz) m/s come within `radius` m of (px, pz) in
+ * the next `horizon` seconds? A ball that is moving away (closest approach already behind it) does not count.
+ */
+export function ballApproaches(px, pz, bx, bz, vx, vz, radius, horizon) {
+  const dx = px - bx, dz = pz - bz;
+  const v2 = vx * vx + vz * vz;
+  if (!(v2 > 1e-6)) return false;
+  const t = (dx * vx + dz * vz) / v2;
+  if (!(t > 0) || t > horizon) return false;
+  const cx = dx - vx * t, cz = dz - vz * t;
+  return cx * cx + cz * cz <= radius * radius;
 }

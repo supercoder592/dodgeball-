@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------------------------------------------
 // Combat - one player's ball handling: pickup, charge & throw, catch, pass, aim assist.
 //
-//   pickup     auto within 0.9 m (profile.autoPickupRadius), manual (E) within 1.6 m; one ball at a time
+//   pickup     auto within 0.9 m (profile.autoPickupRadius), manual (E) within 1.6 m; one ball at a time (touch
+//              players get the manual reach automatically: the Input's touch assist raises intent.pickup)
 //   throw      hold to charge (ease-out curve to fullChargeTime, held up to maxChargeTime for Overcharge), release
 //              -> buildThrowParams: base km/h -> m/s, x charge (minChargeMul..1), x1.2 counter boost (once, after a
 //              Perfect Catch), rally from the ball, throw modifiers (sorted by order) -> ThrowSolver (lead + low arc)
@@ -138,6 +139,11 @@ export class Combat {
     if (this.heldBall !== ball) this._acceptBall(ball);
     game.events.emit(EV.BallPickedUp, { ball, player: p });
     return true;
+  }
+
+  /** Nearest ball this player may grab right now within `radius` (default: manual reach), or null (HUD / touch UI). */
+  nearestPickable(radius = this.profile.manualPickupRadius) {
+    return this.heldBall ? null : this._nearestPickable(radius);
   }
 
   /** Nearest pickable ball within manualPickupRadius (E). */
@@ -655,7 +661,9 @@ export class Combat {
   _updateTargeting(dt, intent) {
     const p = this.player, now = game.time.now, prof = this.profile;
     const valid = (t) => !!t && t !== p && game.areEnemies(p, t) && isTargetable(t) && !isHiddenFromAim(t);
-    if (intent && intent.target && valid(intent.target)) { this.currentTarget = intent.target; return; }
+    // A bot's chosen target wins. A human's intent.target only mirrors currentTarget (HumanController), so it is no
+    // override: target cycling (Tab / R3 / touch tap) and the automatic soft lock below keep working for humans.
+    if (!p.isHuman && intent && intent.target && valid(intent.target)) { this.currentTarget = intent.target; return; }
 
     const dir = intent && intent.aimDir && intent.aimDir.lengthSq() > 1e-8 ? intent.aimDir : _b.set(Math.sin(p.yaw || 0), 0, Math.cos(p.yaw || 0));
     if (intent && intent.cycleTarget) {

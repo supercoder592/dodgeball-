@@ -5,7 +5,10 @@
 //   * Keyboard (KeyboardEvent.code, layout independent) + mouse with Pointer Lock (click the canvas to lock, Esc
 //     unlocks -> opens the pause menu).
 //   * Gamepad (W3C standard mapping, polled every frame, analogue triggers with hysteresis).
-//   * Touch (input/touch.js): floating stick, drag-to-look, thumb buttons - shown on coarse-pointer devices.
+//   * Touch (input/touch.js): floating stick, drag-to-look (tap = cycle target), five thumb buttons (context primary
+//     投球 / 撿球 / 接球, 閃避 jump-or-slide, 傳球 with the ball, 技能, 大絕) - shown on coarse-pointer devices.
+//     lateUpdate() feeds the primary button's mode every frame; touch players also get automatic pickup within the
+//     manual reach (touchPickupReady -> intent.pickup, same rules as pressing E).
 //
 // Every device feeds the same logical actions (ActionState: held + per-frame pressed/released edges). Look deltas go
 // straight to game.cameraRig.addLook(dxDeg, dyDeg) once per frame on REAL time (camera/UI rule), so aiming keeps
@@ -22,6 +25,7 @@ import { game } from '../game.js';
 import { TEAM } from '../core/constants.js';
 import {
   ActionState, SRC, PAD, PAD_BUTTON_COUNT, radialDeadzone, axisCurve, clampMagnitude2, triggerHysteresis, RepeatNav, keyAxes,
+  touchPrimaryMode, ballApproaches, dodgeAction, DODGE,
 } from './inputMath.js';
 import { Settings } from './settings.js';
 import { TouchControls } from './touch.js';
@@ -44,6 +48,8 @@ export const INPUT_TUNING = Object.freeze({
   lockFailuresBeforeFallback: 3,
   aimMinDistance: 1.5,          // m: closer aim points fall back to the camera ray direction
   aimFallbackDistance: 30,      // m along the aim ray when the rig exposes no aimPoint
+  touchThreatRadius: 2.5,       // m: an enemy live ball passing this close ...
+  touchThreatHorizon: 1.5,      // s: ... within this time keeps the touch primary button on 接球 (catch)
 });
 
 // ------------------------------------------------------------------ bindings
@@ -127,6 +133,11 @@ export class Input {
     this._tmpB = { x: 0, y: 0 };
     this._bodyTouchClass = null;
     this.container = null;
+    /**
+     * Touch players pick up any ball within the manual reach automatically (touch-only assist, like aim assist; only
+     * while touch is the device in use - touchActive).
+     */
+    this.touchAutoPickup = true;
   }
 
   // ------------------------------------------------------------------ lifecycle
@@ -270,6 +281,34 @@ export class Input {
     a.setSource(SRC.TOUCH, on);
   }
 
+  /**
+   * 閃避 (touch dodge) resolved by TouchControls: a slide when asked for AND the state machine would start one
+   * (dodgeAction: grounded fast enough or sprinting, off the slide cooldown), otherwise a jump - so a wind-up gets
+   * its jump throw and the button is never a dead tap. One-frame press.
+   */
+  touchDodge(slide) {
+    const p = game.localPlayer, m = p && p.motor, fsm = p && p.fsm;
+    const walk = (m && m.profile && m.profile.walkSpeed) || 4.6;
+    const frac = (fsm && fsm.tuning && fsm.tuning.slideMinSpeedFraction) || 0.6;
+    const out = dodgeAction(!!slide && !!m && !!fsm, fsm ? fsm.current : '', !!(m && m.canSlide), (m && m.planarSpeed) || 0, walk * frac);
+    const action = out === DODGE.SLIDE ? 'slide' : 'jump';
+    this.setTouchAction(action, true);
+    this.setTouchAction(action, false);
+  }
+
+  /**
+   * A 投球 press ended without a pointerup (pointercancel: a system edge swipe, lost capture): drop the wind-up and
+   * keep the ball. Called before the touch 'throw' action is released, so ChargingThrow leaves on !isCharging
+   * instead of treating the release as a throw.
+   */
+  cancelTouchThrow() {
+    const c = game.localPlayer && game.localPlayer.combat;
+    if (c && c.isCharging && typeof c.cancelCharge === 'function') c.cancelCharge();
+  }
+
+  /** The touch layer is the device in use (shown, and the last input came from a finger - not a pad / keyboard). */
+  get touchActive() { return !!this.touch && this.touch.visible && this.lastDevice === 'touch'; }
+
   // ------------------------------------------------------------------ per frame
   update(dt, realDt) {
     this._pollGamepad(realDt);
@@ -280,6 +319,8 @@ export class Input {
     if (this.touch) {
       this.touch.setVisible(touchOn && this.inMatch && !this._menus.length && !game.time.paused && !!game.localPlayer);
       this.actions.sprint.setSource(SRC.TOUCH, this.touch.visible && this.touch.sprint);
+      // Pending 閃避 -> slide, hint fade (hint time only counts once the round is actually playing). Before the latch.
+      this.touch.update(realDt, !!game.match && game.match.phase === 'playing');
     }
 
     for (const a of ACTIONS) this.actions[a].latch();
@@ -288,6 +329,20 @@ export class Input {
 
     this._updateMove();
     this._updateLook(realDt);
+  }
+
+  /**
+   * After gameplay (first lateUpdate): the touch primary button's mode for this frame's state - 投球 with the ball,
+   * 撿球 with a pickable ball in manual reach and nothing incoming, else 接球 - and 傳球 only while holding.
+   */
+  lateUpdate() {
+    const t = this.touch;
+    if (!t || !t.visible) return;
+    const p = localPlayerOf(game.players);
+    const c = p && p.combat;
+    const hasBall = !!(c && c.hasBall);
+    const inReach = !hasBall && !!c && typeof c.nearestPickable === 'function' && c.nearestPickable() !== null;
+    t.setContext(touchPrimaryMode(hasBall, inReach, inReach && enemyBallIncoming(p)), hasBall);
   }
 
   _updateMove() {
@@ -547,6 +602,41 @@ export class Input {
   }
 }
 
+// ------------------------------------------------------------------ touch assist helpers (allocation-free)
+/** game.localPlayer without the per-call closure (runs every frame). */
+function localPlayerOf(list) {
+  if (!list) return null;
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].isLocal) return list[i];
+  return null;
+}
+
+/** Is an enemy live ball (throw or pass) coming at `player` - close enough and soon enough to catch? */
+export function enemyBallIncoming(player) {
+  const list = game.balls && game.balls.active;
+  if (!player || !player.position || !list) return false;
+  const pos = player.position;
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    if (b.state !== 'live') continue;
+    const t = b.lastThrower;
+    if (t === player || (t && !game.areEnemies(t, player))) continue;
+    if (ballApproaches(pos.x, pos.z, b.position.x, b.position.z, b.velocity.x, b.velocity.z,
+      INPUT_TUNING.touchThreatRadius, INPUT_TUNING.touchThreatHorizon)) return true;
+  }
+  return false;
+}
+
+/**
+ * Touch pickup (primary button 撿球 + the automatic touch pickup): empty hands, a ball this player may take
+ * (Ball.canBePickedUpBy - zone, reservation and pickup-lock rules) within the manual reach, and no enemy ball on
+ * its way that the hands should stay free for.
+ */
+export function touchPickupReady(player) {
+  const c = player && player.combat;
+  if (!c || c.hasBall || player.canAct === false || typeof c.nearestPickable !== 'function') return false;
+  return c.nearestPickable() !== null && !enemyBallIncoming(player);
+}
+
 // =================================================================================================================
 // HumanController - the local player's intent source (same intent shape as the AI Bot).
 // =================================================================================================================
@@ -609,7 +699,9 @@ export class HumanController {
     this._prevThrowHeld = A.throw.held;
     it.catchPressed = A.catch.pressed;
     it.pass = A.pass.pressed;
-    it.pickup = A.pickup.pressed;
+    // Touch assist: walking onto a ball within the manual reach picks it up (the same path as pressing E). Only while
+    // touch is the device in use - a keyboard / pad player with the touch overlay on screen keeps the normal rules.
+    it.pickup = A.pickup.pressed || (input.touchAutoPickup && input.touchActive && touchPickupReady(player));
     it.skill = A.skill.pressed;
     it.ultimate = A.ultimate.pressed;
     it.cycleTarget = A.cycleTarget.pressed;
