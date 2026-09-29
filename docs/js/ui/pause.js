@@ -8,20 +8,23 @@ import { Settings, SETTINGS_SPEC } from '../input/settings.js';
 import { restartMatch, backToHeroSelect, applyAudioSettings } from './flow.js';
 import { formatClock } from './format.js';
 
-/** Controls reference: [action EN, 中文, keyboard & mouse, gamepad, touch]. */
+/**
+ * Controls reference: [action EN, 中文, keyboard & mouse, gamepad, touch]. Touch names are the button faces of
+ * js/input/touch.js (the big button switches between 投球 / 撿球 / 接球 by itself).
+ */
 export const CONTROLS_TABLE = Object.freeze([
   ['Move', '移動', 'W A S D', 'Left stick', 'Left stick'],
   ['Look / aim', '視角 / 瞄準', 'Mouse', 'Right stick', 'Drag right side'],
   ['Sprint', '衝刺', 'Shift (hold)', 'L3 (toggle)', 'Push stick fully'],
-  ['Jump', '跳躍', 'Space', 'A', 'JUMP'],
-  ['Slide', '滑鏟', 'C / Ctrl', 'B', 'SLIDE'],
-  ['Throw — hold to charge', '投球（按住蓄力）', 'Left mouse', 'RT', 'THROW'],
-  ['Catch', '接球', 'Right mouse', 'LT', 'CATCH'],
-  ['Pass', '傳球', 'Q', 'Y', 'PASS'],
-  ['Pick up', '撿球', 'E', 'X', 'GRAB'],
-  ['Skill', '技能', 'F', 'LB', 'SKILL'],
-  ['Ultimate', '終極技', 'R', 'RB', 'ULT'],
-  ['Cycle target', '切換目標', 'Tab / Middle mouse', 'R3 / D-pad →', 'TARGET'],
+  ['Jump', '跳躍', 'Space', 'A', '閃避 · still / swipe ↑'],
+  ['Slide', '滑鏟', 'C / Ctrl', 'B', '閃避 · while moving'],
+  ['Throw — hold to charge', '投球（按住蓄力）', 'Left mouse', 'RT', '投球 (hold)'],
+  ['Catch', '接球', 'Right mouse', 'LT', '接球'],
+  ['Pass', '傳球', 'Q', 'Y', '傳球'],
+  ['Pick up', '撿球', 'E', 'X', 'Walk onto it · 撿球'],
+  ['Skill', '技能', 'F', 'LB', '技能'],
+  ['Ultimate', '終極技', 'R', 'RB', '大絕'],
+  ['Cycle target', '切換目標', 'Tab / Middle mouse', 'R3 / D-pad →', 'Tap right side'],
   ['Pause', '暫停', 'Esc / P', 'Start', '❚❚'],
 ]);
 

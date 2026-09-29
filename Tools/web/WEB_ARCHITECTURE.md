@@ -24,6 +24,9 @@ Realistic humans: Microsoft Rocketbox avatars + motion capture (MIT), converted 
 * Verify: `cd Tools/web && node smoke.mjs --tag <you> --seconds 20` (AI vs AI spectate) must show **no page errors
   and no console errors** once all modules exist; view the screenshots in `Tools/web/screenshots/`.
   `npm test` runs `docs/js/**/*.test.js` (pure logic). Syntax-check a file quickly with `node --check file.js`.
+  Touch controls: `node touch_check.mjs` (emulated phones, real multi-finger touch events: layout at 844x390,
+  915x412, 1000x460, 1280x720, 800x360, 667x375, 926x428 and portrait 390x844, each without and with forced notch
+  safe-area insets + every touch gesture; screenshots `touch-<w>x<h>-{ball,empty,safe}.png`).
 
 ## 2. Kernel (already written — read them)
 
@@ -123,12 +126,13 @@ reach 0.55 m from the player's own region) and honours the reservation.
 `combat.js` → `Combat(player, profile)`: `hasBall heldBall isCharging chargeSeconds charge (0..1) catchArmed
 lastCatchInput perfectWindow perfectWindowMul catchingBlocked currentTarget counterBoostUntil passHandler profile`;
 `addThrowModifier({order, modify(params), committed?(params, ball)})`, `removeThrowModifier`, `tryPickup(ball)`,
-`tryPickupNearest()`, `giveBall(ball)`, `beginCharge()`, `releaseThrow()`, `cancelCharge()`,
+`tryPickupNearest()`, `nearestPickable(radius = manual reach)` (ball or null; touch UI), `giveBall(ball)`, `beginCharge()`, `releaseThrow()`, `cancelCharge()`,
 `throwNow(charge, target)`, `buildThrowParams(chargeSeconds, target, isAbility)`, `launchBall(ball, params)`,
 `tryStartCatch()`, `cancelCatch()`, `tryResolveCatch(ball, point, impactTime) -> CatchQuality`, `inCatchCone(pos)`,
 `tryPass(to?)` (receiver: `to` > `intent.passTarget` > aim cone > nearest; passes crossing the enemy half are lobs),
 `previewPassReceiver()` (HUD pass marker), `receivePass(ball, from)`, `dropBall(velocity)`, `getThrowOrigin()`, `grantCounterBoost()`,
-`resetForRound()`, `update(dt)`.
+`resetForRound()`, `update(dt)`. Aim assist: a bot's `intent.target` overrides the lock; for humans (`isHuman`)
+`intent.target` only mirrors `currentTarget`, so cycling (Tab / R3 / touch tap) and the automatic soft lock apply.
 ThrowParams: `{ thrower, target, origin, aimDir, aimPoint, baseSpeed, charge, chargeSeconds, speedMul, radiusMul,
 rallyCount, gravityScale, unblockable, pierce, isAbility, isPass, isCounter, reveals, style, payload }`.
 `throwSolver.js` → `finalSpeed(params)` (rally formula + 220 km/h cap), `ThrowSolver.solve(params) -> {velocity,
@@ -222,6 +226,35 @@ buttons on mobile); `HumanController` with `sample(player, dt) -> intent` (camer
 `game.cameraRig.planarForward/Right`, aim from `cameraRig.aimRay/aimPoint`), sends look deltas to the rig,
 `pausePressed`. Controls: WASD, mouse, Shift sprint, Space jump, C/Ctrl slide, LMB hold-throw, RMB catch, Q pass,
 E pickup, F skill, R ultimate, Tab cycle target, Esc pause.
+**Touch** (`input/touch.js` → `TouchControls`, styles `.tc-*`; shown on coarse pointers or `?touch=1`): left side =
+floating stick (push to the rim = sprint), right side = drag to look / aim, and a **short tap there (< 220 ms,
+< 12 px) cycles the target** (soft lock otherwise automatic). A finger landing within 16 px outside a button's circle
+presses that button (near-miss); one on the hidden 傳球's spot only looks, never cycles. Five buttons with short
+Chinese labels, on an arc around the primary (every offset includes the safe-area insets; a portrait-phone variant
+keeps 閃避 out of the stick zone; `Tools/web/touch_check.mjs` checks the layouts for overlaps with each other / the
+HUD). The touch kill feed shows only the whole 20 px lines that fit above the arc (`--tc-arc`), and the local shot
+clock sits left of the crosshair:
+* **primary** (big, bottom right) - its mode is set every frame by `Input.lateUpdate()` (`touchPrimaryMode` in
+  `inputMath.js`): **投球** while holding the ball (hold = charge, drag while holding = fine aim, release = throw),
+  **撿球** when `combat.nearestPickable()` finds a ball in manual reach and no enemy live ball is coming at the player
+  (`enemyBallIncoming`: planar closest approach within 2.5 m in the next 1.5 s), else **接球**. The action a press
+  triggers is fixed at pointerdown (a label flip mid-press never changes it or releases a charge). A cancelled 投球
+  touch (pointercancel: system edge swipe, lost capture) calls `Input.cancelTouchThrow()` - the wind-up is dropped,
+  the ball kept, nothing is thrown.
+* **閃避** - stick pushed past 0.3 → slide in the move direction (on release, or after 110 ms without a swipe);
+  stick idle → jump at once; quick upward swipe from the button → jump. `Input.touchDodge(slide)` sends the slide only
+  when the state machine would start one (`dodgeAction`: Grounded at ≥ 0.6 × walk speed or Sprinting, `motor.canSlide`)
+  and a jump otherwise - a throw wind-up gets its jump throw, a slow walk or the slide cooldown never leaves a dead
+  tap. Jump / slide mechanics are unchanged.
+* **傳球** - only while holding the ball (hidden in place, nothing moves). **技能 / 大絕** - cooldown sweep, ult charge
+  ring, ready glow (`setAbilityState`, fed by the HUD). **❚❚** pause (top right).
+Touch players also pick up automatically within the manual reach (`Input.touchAutoPickup`, default on): while touch
+is the device in use (`Input.touchActive`: overlay shown and `lastDevice === 'touch'`), `HumanController` raises
+`intent.pickup` when `touchPickupReady(player)` - the same `tryPickupNearest` path as E, so `Ball.canBePickedUpBy`
+(zones, reservations, pickup locks) and the possession clock apply unchanged; bots and keyboard / gamepad players
+(even with the touch overlay on screen) are unaffected. The HUD pickup prompt is hidden only while touch is in use.
+The stick / aim hints (dark pills) fade after the first 6 s of the 'playing' phase (pre-round / countdown do not
+count; once per session).
 `ui/hud.js` → `Hud` (system): DOM overlay (HP, ult meter, skill/ult cooldown radials, charge bar, catch feedback
 (PERFECT!), crosshair + lock marker, scoreboard/timer/player pips (ring pip = starting outfielder), possession shot-clock bar +
 possession dot, local 3-2-1 countdown, serve / time-violation banners, interception + out-of-play toasts, pass-receiver
